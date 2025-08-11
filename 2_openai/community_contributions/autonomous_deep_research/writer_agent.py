@@ -4,7 +4,7 @@ from agents import Agent
 from email_agent import email_agent_tool
 
 INSTRUCTIONS = (
-    "You are a senior researcher tasked with writing a cohesive report for a research query. "
+    "You are a senior researcher tasked with writing a cohesive report for a research query."
     "You will be provided with the original query, and some initial research done by a research assistant.\n"
     "You should first come up with an outline for the report that describes the structure and "
     "flow of the report. Then, generate the report and return that as your final output.\n"

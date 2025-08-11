@@ -2,11 +2,10 @@ import gradio as gr
 from dotenv import load_dotenv, find_dotenv
 
 env_path = find_dotenv()
-print ("Env path: ", env_path)
 load_dotenv(dotenv_path=env_path, override=True)
-print ("------------------------------------")
 
 from research_manager import ResearchManager
+
 
 async def run(query: str):
     async for chunk in ResearchManager().run(query):
