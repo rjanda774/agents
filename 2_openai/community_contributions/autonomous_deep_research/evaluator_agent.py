@@ -30,9 +30,13 @@ async def evaluate(topic: str, report: str) -> Evaluation:
     """
     Evaluates if the report is according to the standards
     """
+    temp_report = """
+        This is a junk report
+    """
+
     user_prompt = "Here is the research topic and generated report"
     user_prompt += f"\n\nTopic: {topic}\n\n"
-    user_prompt += f"\n\nReport: {report}\n\n"
+    user_prompt += f"\n\nReport: {temp_report}\n\n"
     user_prompt += "Please evaluate the report, replying with whether it is acceptable with your feedback"
 
     print ("Starting evaluation")

@@ -14,13 +14,12 @@ async def run(query: str):
 
 
 with gr.Blocks(theme=gr.themes.Default(primary_hue="sky")) as ui:
+    ui.queue(default_concurrency_limit=5)
     gr.Markdown("# Deep Research")
-    query_textbox = gr.Textbox(label="What topic would you like to research?")
+    query_textbox = gr.Textbox(label="What topic would you like to research?", value="Latest agentic AI frameworks in 2025")
     run_button = gr.Button("Run", variant="primary")
-    report = gr.Markdown(label="Report")
-    
-    run_button.click(fn=run, inputs=query_textbox, outputs=report)
+    notifications = gr.Textbox(label="Notifications", lines=1, interactive=True)
+    report = gr.HTML(label="Report")
+    run_button.click(fn=run, inputs=query_textbox, outputs=[notifications, report])
     query_textbox.submit(fn=run, inputs=query_textbox, outputs=report)
-
 ui.launch(inbrowser=True)
-
