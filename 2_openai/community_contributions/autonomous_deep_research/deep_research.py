@@ -20,5 +20,5 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="sky")) as ui:
     notifications = gr.Textbox(label="Notifications", lines=1, interactive=True)
     report = gr.HTML(label="Report")
     run_button.click(fn=run, inputs=query_textbox, outputs=[notifications, report])
-    query_textbox.submit(fn=run, inputs=query_textbox, outputs=report)
+    query_textbox.submit(fn=run, inputs=query_textbox, outputs=[notifications, report])
 ui.launch(inbrowser=True)
