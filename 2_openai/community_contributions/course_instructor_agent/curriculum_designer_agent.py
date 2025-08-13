@@ -1,16 +1,30 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from agents import Agent
 
-INSTRUCTIONS = (
-    "You are a curriculum designer. Given a course outline, you design a curriculum for the course. "
-    "Break it into logical modules and lessons."
-    "Define learning objectives for each module."
-    "Recommend prerequisites and progression flow."
-    "The curriculum should be a list of modules, each with a title, description, and a list of lessons. "
-    "Each lesson should have a title, description, and a list of activities. "
-    "Each activity should have a title, description, and a list of resources. "
-)
+
+class CurriculumDesignerInstructions():
+    def name(self):
+        return "curriculum_designer"
+    
+    def instructions(self):
+        return (
+            "You are a curriculum designer. Given a course outline, you design a curriculum for the course. "
+            "Break it into logical modules and lessons."
+            "Define learning objectives for each module."
+            "Recommend prerequisites and progression flow."
+            "The curriculum should be a list of modules, each with a title, description, and a list of lessons. "
+            "Each lesson should have a title, description, and a list of activities. "
+            "Each activity should have a title, description, and a list of resources. "
+        )
+    
+    def handoff_description(self):
+        return self.instructions()
+    
+    def model(self) -> Literal["gpt-4o-mini", "gpt-4o"]:
+        return "gpt-4o-mini"
 
 class Activity(BaseModel):
     """
@@ -58,10 +72,19 @@ class Curriculum(BaseModel):
     """
     modules: list[Module] = Field(description="The list of the modules of the course")
 
-curriculum_designer_agent = Agent(
-    name="Curriculum designer",
-    instructions=INSTRUCTIONS,
-    model="gpt-4o-mini",
-    output_type=Curriculum,
-    handoff_description="You are a curriculum designer. Given a course outline, you design a curriculum for the course. "
-)
+
+class CurriculumDesignerAgent():
+    def __init__(self):
+        instructions = CurriculumDesignerInstructions()
+        self.agent = Agent(
+            name=instructions.name(),
+            instructions=instructions.instructions(),
+            model=instructions.model(),
+            handoff_description=instructions.handoff_description(),
+            output_type=Curriculum,
+        )
+    
+    def as_tool(self):
+        instructions = CurriculumDesignerInstructions()
+        return self.agent.as_tool(tool_name=instructions.name(), tool_description=instructions.handoff_description())
+    
