@@ -43,9 +43,28 @@ This implementation demonstrates the **orchestrator-workers workflow** pattern f
 
 ### Running the Demo
 
+#### Option 1: Direct execution with uv
 ```bash
-cd 1_foundations/community_contributions
-python orchestrator_workers_demo.py
+cd 1_foundations/community_contributions/lab_2_orchestrator_workers_demo
+uv run orchestrator_workers_demo.py
+```
+
+#### Option 2: Install dependencies and run
+```bash
+cd 1_foundations/community_contributions/lab_2_orchestrator_workers_demo
+uv sync  # Install dependencies
+uv run python orchestrator_workers_demo.py
+```
+
+#### Option 3: From project root
+```bash
+# From the agents project root
+uv run python 1_foundations/community_contributions/lab_2_orchestrator_workers_demo/orchestrator_workers_demo.py
+```
+
+#### Option 4: With specific Python version
+```bash
+uv run --python 3.11 python orchestrator_workers_demo.py
 ```
 
 ### Customizing the Task
