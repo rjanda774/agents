@@ -19,6 +19,8 @@ import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 from pypdf import PdfReader
+from typer import prompt
+from promptkit import render
 
 # Import refactored data models
 from models import (
@@ -300,10 +302,10 @@ class Evaluator:
         resume_has_webrtc = "WebRTC" in self.context['resume']
         resume_has_websocket = "WebSocket" in self.context['resume']
 
-        logger.info(f"EVALUATOR CONTEXT DEBUG:")
-        logger.info(f"  Resume length: {resume_length} chars, WebRTC: {resume_has_webrtc}, WebSocket: {resume_has_websocket}")
-        logger.info(f"  LinkedIn length: {linkedin_length} chars")
-        logger.info(f"  Summary length: {summary_length} chars")
+        logger.debug(f"EVALUATOR CONTEXT DEBUG:")
+        logger.debug(f"  Resume length: {resume_length} chars, WebRTC: {resume_has_webrtc}, WebSocket: {resume_has_websocket}")
+        logger.debug(f"  LinkedIn length: {linkedin_length} chars")
+        logger.debug(f"  Summary length: {summary_length} chars")
 
         if resume_has_webrtc:
             webrtc_index = self.context['resume'].find("WebRTC")
@@ -396,7 +398,7 @@ Is this response acceptable? Provide specific feedback about any issues."""
             response_format=StructuredResponse
         )
         system_fp = getattr(response, "system_fingerprint", None)
-        logging.info("EVAL: served_model=%s system_fp=%s", response.model, system_fp)
+        logging.debug("EVAL: served_model=%s system_fp=%s", response.model, system_fp)
 
         return response.choices[0].message.parsed
 
@@ -507,7 +509,7 @@ Facts used: {structured_reply.facts_used}
                 temperature=0.0
             )
             system_fp = getattr(response, "system_fingerprint", None)
-            logging.info("EVAL: served_model=%s system_fp=%s", response.model, system_fp)
+            logging.debug("EVAL: served_model=%s system_fp=%s", response.model, system_fp)
 
             evaluation = response.choices[0].message.parsed
             logger.info(f"EVALUATION RESULT: {'PASS' if evaluation.is_acceptable else 'FAIL'}")
@@ -799,7 +801,7 @@ This threshold is ABSOLUTE - NO exceptions.
                 response_format=JobMatchResult
             )
             system_fp = getattr(response, "system_fingerprint", None)
-            logging.info("MATCH: served_model=%s system_fp=%s", response.model, system_fp)
+            logging.debug("MATCH: served_model=%s system_fp=%s", response.model, system_fp)
 
             result = response.choices[0].message.parsed
             logger.info(f"Job match analysis completed: {result.overall_match_level} match for {role_title}")
@@ -888,53 +890,27 @@ class CareerChatbot:
 
     def _create_system_prompt(self) -> str:
         """Create the system prompt for the AI assistant"""
-        prompt = f"""You are an AI assistant designed by {self.config.name} and representing them, helping visitors learn about their professional background.
-Your knowledge comes from {self.config.name}'s resume, LinkedIn profile, and professional summary provided below.
-Your knowledge can also be augmented with real-time data from GitHub if needed and/or when appropriate.
 
-CRITICAL INSTRUCTIONS:
-1. ALWAYS search through ALL the provided context (Summary, LinkedIn, Resume) before claiming you don't have information. Be precise and thorough.
-2. CONTACT IS A TWO-STEP PROCESS:
-   a. First, OFFER to facilitate contact for i) professional questions you can't fully answer, or ii) job matches rated '{self.config.job_match_threshold}' or better. Your response should just be text making the offer.
-   b. Second, WAIT for the user to provide their email. ONLY THEN should you use the `record_user_details` tool. Never invent an email.
-3. USER-INITIATED CONTACT: If a user asks to connect before you offer, politely decline.
-4. PERSONAL QUESTIONS: For private/personal questions (salary, etc.), respond ONLY with "I am sorry, I can't provide that information." and do not offer contact.
-5. JOB MATCHING: Use `evaluate_job_match` for job descriptions. Present the full analysis. If the match is good, follow the two-step contact process.
-IMPORTANT: The Resume and LinkedIn contain detailed technical information, frameworks, tools, and technologies used. Always check these thoroughly.
-
-TOOLS:
-- record_user_details: Record contact information ONLY AFTER a user provides their email.
-- evaluate_job_match: Analyze job fit and provide detailed match levels and recommendations
-
-TOOLS:
-- record_user_details: Record contact information when someone wants professional follow-up
-- evaluate_job_match: Analyze job fit and provide detailed match levels and recommendations"""
-
+        # Prepare GitHub tools context if available
+        github_tools = ""
         if self.web_search_service:
-            prompt += """
-- search_github_repos: Search for open source projects and GitHub repositories
-- get_repo_details: Get detailed information about specific repositories"""
+            github_tools = (
+                "You can use the `search_github_repos` tool to find open source projects and repositories. "
+                "Use the `get_repo_details` tool to get detailed information about specific repositories."
+            )
 
-        prompt += f"""
+        vars = {
+          'config': self.config,        # Access as {config.name}, {config.job_match_threshold}
+          'context': self.context,      # Access as {context.summary}, {context.linkedin}, etc.
+          'github_tools': github_tools  # Access as {github_tools} (for conditional content)
+        }
+        chat_init_prompt = render('prompts/chat_init.md', vars)
+        return chat_init_prompt
 
-Be helpful and answer what you know from the context. Use GitHub search tools for questions about open source work, repositories, or recent projects.
-
-## CONTEXT:
-
-### Summary:
-{self.context['summary']}
-
-### LinkedIn Profile:
-{self.context['linkedin']}
-
-### Resume:
-{self.context['resume']}"""
-
-        return prompt
 
     def chat(self, message: str, history: List[Dict[str, str]], max_retries: int = 3) -> str:
         """Main chat function that processes user messages with evaluation and Lab 3 retry approach"""
-        logger.info(f"==> PROCESSING message: '{message[:50]}...'")
+        logger.info(f"🔄 PROCESSING message: '{message[:50]}...'")
 
         # Generate initial response with tools
         messages = [{"role": "system", "content": self.system_prompt}] + history + [{"role": "user", "content": message}]
@@ -955,7 +931,7 @@ Be helpful and answer what you know from the context. Use GitHub search tools fo
                 evaluation = self.evaluator.evaluate_structured(structured_reply, message, evaluation_history)
 
                 if evaluation.is_acceptable:
-                    logger.info(f"✅ PASSED evaluation on attempt {attempt + 1}/{max_retries}")
+                    logger.info(f"✅ PASSED evaluation on attempt {attempt + 1}/{max_retries}\n")
 
                     # Send notifications only after successful evaluation
                     for notification in pending_notifications:
@@ -963,7 +939,7 @@ Be helpful and answer what you know from the context. Use GitHub search tools fo
 
                     return structured_reply.response if structured_reply else "I apologize, but I'm experiencing technical difficulties."
                 else:
-                    logger.warning(f"❌ FAILED evaluation on attempt {attempt + 1}/{max_retries}: {evaluation.feedback[:100]}...")
+                    logger.warning(f"❌ FAILED evaluation on attempt {attempt + 1}/{max_retries}: {evaluation.feedback[:100]}...\n")
 
                     # If we haven't exhausted retries, regenerate using Lab 3 rerun approach
                     if attempt < max_retries - 1:
@@ -1002,7 +978,7 @@ Be helpful and answer what you know from the context. Use GitHub search tools fo
                     response_format=StructuredResponse
                 )
                 system_fp = getattr(response, "system_fingerprint", None)
-                logging.info("CHAT: served_model=%s system_fp=%s", response.model, system_fp)
+                logging.debug("CHAT: served_model=%s system_fp=%s", response.model, system_fp)
 
                 finish_reason = response.choices[0].finish_reason
 
