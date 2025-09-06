@@ -322,7 +322,8 @@ class Evaluator:
 
     def _create_user_prompt(self, reply: str, message: str, history: List[Dict]) -> str:
         """Create the user prompt for evaluation"""
-        history_str = "\n".join([f"{h['role']}: {h['content']}" for h in history[-3:]])  # Last 3 messages
+        # Include the last N messages from the history. e.g., last 6 messages for more context
+        history_str = "\n".join([f"{h['role']}: {h['content']}" for h in history[-6:]])
 
         return f"""Here's the conversation context:
 
@@ -698,56 +699,16 @@ class ToolRegistry:
         if not self.openai_client or not self.context:
             return {"error": "Job matching requires OpenAI client and context"}
 
+        logger.info(f"🎯 Evaluating job match for role: {role_title}")
+        vars = {
+            "role_title": role_title,
+            "job_description": job_description,
+            "config": self.config,
+            "context": self.context,
+        }
+
         # Create analysis prompt
-        analysis_prompt = f"""You are a professional job matching analyst. Analyze how well this candidate matches the given job.
-
-JOB TITLE: {role_title}
-JOB DESCRIPTION: {job_description}
-
-CANDIDATE BACKGROUND:
-Summary: {self.context.get('summary', 'Not available')}
-Resume: {self.context.get('resume', 'Not available')}
-LinkedIn: {self.context.get('linkedin', 'Not available')}
-
-CRITICAL INSTRUCTIONS:
-- Only analyze skills and technologies EXPLICITLY mentioned in the job description above
-- Do not infer, assume, or add skills that are not directly stated in the job requirements
-- Do not include general software engineering practices unless specifically mentioned in the job
-
-Provide a detailed analysis with:
-1. Overall match level: Your holistic judgment using EXACTLY one of these levels (you must use these EXACT words only):
-   - "Very Strong": 90%+ of skills Extensive/Solid, minimal gaps
-   - "Strong": 70-89% of skills Extensive/Solid, few gaps
-   - "Good": 50-69% of skills Extensive/Solid/Moderate, manageable gaps
-   - "Moderate": 30-49% of skills covered, significant gaps but some foundation
-   - "Weak": 10-29% of skills covered, majority missing/limited
-   - "Very Weak": <10% of skills covered, complete domain mismatch
-
-   CALIBRATION: Count your skill assessments and calculate the percentage that are Extensive/Solid/Moderate vs Missing/Limited/Inferred. Use this to determine the correct level.
-
-   CRITICAL: Use ONLY these exact 6 levels. Do NOT use "Low", "High", "Fair", "Poor" or any other terms.
-2. Skill assessments: For each skill mentioned in the job description, assess using these levels:
-   - "Extensive": Multiple projects/companies, clearly a core competency
-   - "Solid": Several projects, reliable experience
-   - "Moderate": Some mention, decent experience
-   - "Limited": Minimal mention or recent/brief exposure
-   - "Inferred": Not explicitly mentioned but has closely related/transferable skills (e.g., has MQTT or ROS2 experience for DDS requirement)
-   - "Missing": No evidence and no related transferable skills
-   - Evidence: Where skill was found OR reasoning for inference/missing assessment
-3. Skill assessments format: ALWAYS use the format:
-   - Skill Name: Level - Evidence/Reasoning
-   - Example: "UI/UX Design: Limited - Some involvement in UI bug fixes but not a core focus in his career."
-4. Experience analysis: How candidate's experience aligns with role requirements
-5. Industry analysis: How candidate's industry background fits
-6. Recommendations: Overall assessment and next steps
-
-CRITICAL: Contact facilitation for jobs must be based STRICTLY on overall match level:
-- If match level is "{self.config.job_match_threshold if self.config else 'Good'}" or better: Set should_facilitate_contact = true and offer to facilitate contact
-- If match level is below "{self.config.job_match_threshold if self.config else 'Good'}": Set should_facilitate_contact = false and do NOT offer contact facilitation
-
-The hierarchy is: Very Strong > Strong > Good > Moderate > Weak > Very Weak
-This threshold is ABSOLUTE - NO exceptions.
-"""
+        analysis_prompt = render("prompts/job_match_analysis.md", vars)
 
         try:
             response = self.openai_client.beta.chat.completions.parse(
