@@ -1,16 +1,18 @@
-"""
-Career Chatbot - AI assistant that represents professionals on their websites,
-answering questions about their background while facilitating follow-up contact.
+"""Career Chatbot
+
+AI assistant that represents professionals on their websites, answering
+questions about their background while facilitating follow-up contact.
+
+Data models have been refactored into the `models` package to keep this file
+focused on orchestration, tool wiring, and runtime logic.
 """
 
 import os
 import json
 import logging
 from typing import List, Dict, Optional, Any
-from dataclasses import dataclass
 from datetime import datetime
 import re
-from pydantic import BaseModel
 
 import gradio as gr
 import requests
@@ -18,58 +20,18 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pypdf import PdfReader
 
+# Import refactored data models
+from models import (
+    ChatbotConfig,
+    Evaluation,
+    StructuredResponse,
+    SkillAssessment,
+    JobMatchResult,
+)
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-
-class Evaluation(BaseModel):
-    """Evaluation result for a response"""
-    is_acceptable: bool
-    feedback: str
-
-
-class StructuredResponse(BaseModel):
-    """Structured response with reasoning and evidence"""
-    response: str
-    reasoning: str
-    tools_used: List[str]
-    facts_used: List[str]
-
-
-class SkillAssessment(BaseModel):
-    """Assessment of a specific skill"""
-    skill: str
-    level: str  # "Extensive", "Solid", "Moderate", "Limited", "Inferred", "Missing"
-    evidence: str  # Where this skill was found or reasoning for inference
-
-
-class JobMatchResult(BaseModel):
-    """Result of job matching analysis"""
-    overall_match_level: str  # Very Strong, Strong, Good, Moderate, Weak, Very Weak
-
-    skill_assessments: List[SkillAssessment]
-    experience_analysis: str
-    industry_analysis: str
-
-    recommendations: str
-    should_facilitate_contact: bool
-    contact_reason: Optional[str] = None
-
-
-@dataclass
-class ChatbotConfig:
-    """Configuration for the career chatbot"""
-    name: str
-    github_username: Optional[str] = None
-    resume_path: str = "me/resume.pdf"
-    linkedin_path: str = "me/linkedin.pdf"
-    summary_path: str = "me/summary.txt"
-    model: str = "gpt-4o-mini-2024-07-18"  # Primary chat model
-    evaluator_model: str = "gemini-2.5-flash"  # Use a different model for evaluation to avoid bias
-    job_matching_model: str = "gpt-4o-2024-08-06"  # Model for job matching analysis
-    job_match_threshold: str = "Good"  # Minimum match level for contact facilitation
-
 
 class NotificationService:
     """Handles push notifications via Pushover"""
