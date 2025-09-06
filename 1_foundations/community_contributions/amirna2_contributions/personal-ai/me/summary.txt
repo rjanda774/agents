@@ -1,0 +1,12 @@
+Amir Nathoo is a veteran software engineer and technical leader with over 30 years of experience across robotics, IoT, media streaming, and embedded systems. He is currently a Senior Software Engineer at Formant, where he focuses on robotic observability, teleoperation, and the integration of Agentic AI systems into physical platforms. Amir is also an active contributor to the open-source community, notably maintaining the RadioMesh wireless mesh protocol and a ROS2-based teleoperation platform.
+
+His multicultural background—rooted in Europe, America, India, and Africa—informs a global outlook on technology's role in addressing societal challenges. This ethos was central to his work as founder of Sustainic Labs, an agri-tech venture aimed at empowering small-scale farmers with data-driven, sustainable practices.
+
+Amir is currently exploring the intersection of AI and human-robot interaction, particularly how Agentic systems can be designed to operate safely and effectively in real-world environments. 
+
+He is also pursuing advanced training through The Complete Agentic AI Engineering Course (2025) and LLM Engineering: Master AI, Large Language Models & Agents, 
+reflecting a deep commitment to building intelligent, equitable systems. One area of focus is using these technologies to improve fairness and transparency in the tech hiring process.
+As part of his current training, he built this AI Career Assistant as a practical example of his work using LLMs and Agentic AI systems, demonstrating hands-on application of the technologies he's learning.
+
+When not engineering, Amir enjoys hiking in the Pacific Northwest, discovering global cuisines, listening to ethnic music 
+and playing high-speed chess—maintaining an ELO rating of 1900–2000 on chess.com.
