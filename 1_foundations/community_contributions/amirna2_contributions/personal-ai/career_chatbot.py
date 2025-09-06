@@ -27,7 +27,6 @@ from models import (
     ChatbotConfig,
     Evaluation,
     StructuredResponse,
-    SkillAssessment,
     JobMatchResult,
 )
 
@@ -310,57 +309,15 @@ class Evaluator:
         if resume_has_webrtc:
             webrtc_index = self.context['resume'].find("WebRTC")
             snippet = self.context['resume'][max(0, webrtc_index-50):webrtc_index+50]
-            logger.info(f"  WebRTC context in resume: ...{snippet}...")
+            logger.debug(f"  WebRTC context in resume: ...{snippet}...")
 
-        return f"""You are an intelligent evaluator for an AI agent's structured responses.
-
-The Agent represents {self.config.name} and provides responses in structured format containing:
-- response: The actual answer shown to users
-- reasoning: How the agent arrived at the answer
-- tools_used: List of tools called (if any)
-- facts_used: Specific facts/quotes supporting the response
-
-## CONTEXT AVAILABLE TO AGENT:
-### Summary:
-{self.context['summary']}
-
-### LinkedIn Profile:
-{self.context['linkedin']}
-
-### Resume:
-{self.context['resume']}
-
-## EVALUATION LOGIC:
-
-### WHEN tools_used is NOT EMPTY:
-- Accept tool results (especially GitHub API data) as valid factual information
-- Tool results don't need to strictly match resume/LinkedIn context
-- GitHub may show languages/technologies or projects not mentioned in resume/LinkedIn - this is VALID
-- Verify tool usage was appropriate for the question
-- Check that reasoning explains the tool usage
-
-### WHEN tools_used is EMPTY:
-
-- Factual validation: All factual claims must be explicitly supported by resume/summary/LinkedIn context, including technical skills, experiences, tools, and technologies, numbers, dates, and names
-- Allow reasonable inferences (e.g., ROS2 experience → DDS knowledge) if clearly explained in reasoning
-- Allow some semantic flexibility (e.g. core competencies ↔ core skills) but not major changes
-- Reject any information not found in the provided context
-- Verify agent follows these behavioral rules:
-  1. Professional questions not fully answerable → offers to facilitate contact with {self.config.name}
-  2. Personal/private questions (salary, relationships, private details) → MUST respond "I am sorry, I can't provide that information" and MUST NOT offer to facilitate contact
-  3. Follow-up requests to contact for personal information → MUST be declined without alternatives
-  4. Follow-up requests to contact for job match below threshold → MUST be declined without alternatives
-  5. Follow-up requests to contact for professional questions in context → SHOULD facilitate contact and record user details
-  6. Job matches at or above threshold ({self.config.job_match_threshold if self.config else 'Good'}) → SHOULD facilitate contact and record user details
-  7. HIERARCHY: Very Strong > Strong > Good > Moderate > Weak > Very Weak (Strong is ABOVE Good threshold!)
-
-## DECISION CRITERIA:
-- Does the response match the facts_used?
-- Is the reasoning sound?
-- Were appropriate tools used (or should have been)?
-- Are behavioral rules followed?
-
-Mark UNACCEPTABLE only if: unsupported claims, missing tool usage when needed, or behavioral rules violated."""
+        vars = {
+            "config": self.config,
+            "context": self.context,
+            "job_match_threshold": self.config.job_match_threshold if self.config else "Good"
+        }
+        prompt = render("prompts/evaluator.md", vars)
+        return prompt
 
 
     def _create_user_prompt(self, reply: str, message: str, history: List[Dict]) -> str:
@@ -445,6 +402,7 @@ Be helpful and answer what you know from the context."""
 
             # Check if GitHub tools were used
             github_tools_used = any(tool in structured_reply.tools_used for tool in ['search_github_repos', 'get_repo_details'])
+            logger.info(f"GITHUB TOOLS USED: {github_tools_used}")
 
             if is_job_matching:
                 evaluation_criteria = f"""Please evaluate this job matching response with REASONABLE STANDARDS:
