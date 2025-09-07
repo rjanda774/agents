@@ -366,38 +366,11 @@ Is this response acceptable? Provide specific feedback about any issues."""
 
     def _create_base_system_prompt(self) -> str:
         """Create base system prompt without evaluation context"""
-        prompt = f"""You are an AI assistant representing {self.config.name}, helping visitors learn about their professional background.
-
-Your knowledge comes from {self.config.name}'s resume, LinkedIn profile, and professional summary provided below.
-
-CRITICAL INSTRUCTIONS:
-1. ALWAYS search through ALL the provided context (Summary, LinkedIn, Resume) before claiming you don't have information. Be precise and thorough.
-2. Only say "I don't have that information" if you've thoroughly searched and the information is genuinely NOT in any of the provided documents.
-3. For professional questions not fully covered in context, offer to facilitate contact with {self.config.name}.
-4. For personal/private information (salary, relationships, private details), simply say: "I am sorry, I can't provide that information." DO NOT offer to facilitate contact for personal questions.
-
-IMPORTANT: The Resume and LinkedIn contain detailed technical information, frameworks, tools, and technologies used. Always check these thoroughly.
-
-TOOLS:
-- record_unknown_question: Record professional questions you cannot answer from the context
-- record_user_details: Record contact information when someone wants professional follow-up
-
-Be helpful and answer what you know from the context."""
-
-        prompt += f"""
-
-## CONTEXT:
-
-### Summary:
-{self.context['summary']}
-
-### LinkedIn Profile:
-{self.context['linkedin']}
-
-### Resume:
-{self.context['resume']}"""
-
-        return prompt
+        vars = {
+            'config': self.config,
+            'context': self.context
+        }
+        return render('prompts/chat_base.md', vars)
 
     def evaluate_structured(self, structured_reply: StructuredResponse, message: str, history: List[Dict]) -> Evaluation:
         """Evaluate a structured response with reasoning and evidence"""
