@@ -1,39 +1,97 @@
 # AI Career Assistant
 
-An AI-powered career assistant that represents professionals on their websites, answering questions about their background while facilitating follow-up contact for qualified opportunities. Built with a modern modular architecture using OpenAI's latest structured output features.
+An AI-powered career assistant that represents professionals on their websites, answering questions about their background while facilitating follow-up contact for qualified opportunities. Built with a template-based architecture using OpenAI's latest structured output features and a simple prompt management system.
 
 ## Features
 
 - **Intelligent Q&A**: Answers questions about professional background using resume, LinkedIn, and summary documents
 - **GitHub Integration**: Real-time repository analysis and project showcasing
-- **Job Matching**: Advanced LLM-powered job fit analysis with detailed skill assessments
-- **Contact Facilitation**: Smart contact routing based on query type and job match quality
+- **Job Matching**: LLM-powered job fit analysis with detailed skill assessments
+- **Contact Facilitation**: Contact routing based on query type and job match quality
 - **Response Evaluation**: Built-in quality control system to prevent hallucinations
+- **Template-Based Prompts**: Maintainable prompt management with composition and variable substitution
 - **Push Notifications**: Pushover integration for real-time alerts
 - **Web Interface**: Clean Gradio-based chat interface
 
 ## Architecture
 
-This project follows a clean modular architecture with clear separation of concerns:
+This project follows a template-based prompt architecture with clear separation of concerns:
 
 ```
 personal-ai/
 ├── models/              # Data models & schemas
 │   ├── config.py           # Configuration classes
 │   ├── evaluation.py       # Response evaluation models
-│   └── job_matching.py     # Job analysis models
-├── services/            # External service integrations
-│   ├── notification.py     # Pushover notifications
-│   ├── web_search.py       # GitHub API integration
-│   └── document_loader.py  # PDF/text processing
-├── core/               # Business logic
-│   ├── evaluator.py        # Response quality control
-│   └── tools.py            # AI agent tools registry
-├── chatbot/            # Main application
-│   └── main.py             # CareerChatbot orchestration
-├── main.py             # Application entry point
-└── career_chatbot.py   # Legacy compatibility wrapper
+│   ├── job_match.py        # Job analysis models
+│   └── responses.py        # Structured response models
+├── prompts/             # Template-based prompt management
+│   ├── chat_init.md           # Main AI assistant system prompt
+│   ├── chat_base.md           # Base system prompt (for rerun)
+│   ├── chat_rerun.md          # Response regeneration template
+│   ├── evaluator.md           # Response evaluation prompt
+│   ├── evaluator_with_github_context.md  # GitHub-enhanced evaluator
+│   └── job_match_analysis.md  # Job matching analysis prompt
+├── docs/               # Documentation
+│   └── prompt-refactoring-plan.md  # Prompt management architecture
+├── me/                 # Professional documents
+│   ├── resume.pdf         # Professional resume
+│   ├── linkedin.pdf       # LinkedIn profile export
+│   └── summary.txt        # Professional summary
+├── promptkit.py        # Template rendering engine
+├── career_chatbot.py   # Main application with integrated services
+└── README.md          # This documentation
 ```
+
+## Prompt Management System
+
+This application features a template-based prompt management system that separates AI prompts from Python code for better maintainability and flexibility.
+
+### Key Components
+
+- **`promptkit.py`**: Template rendering engine with variable substitution
+- **`prompts/` directory**: All AI prompts stored as markdown templates
+- **Template composition**: Complex prompts built by composing simpler templates
+- **Variable substitution**: Dynamic content injection using `{variable}` syntax
+
+### Template Features
+
+**Variable Substitution:**
+```markdown
+You are an AI assistant representing {config.name}.
+Current date: {current_date}
+```
+
+**Template Composition:**
+```markdown
+{base_evaluator_prompt}
+
+## GitHub Tool Results:
+{github_context}
+```
+
+**Conditional Logic:**
+```python
+# In Python code
+github_tools = "Use GitHub tools for repo questions" if web_search_service else ""
+vars = {"github_tools": github_tools}
+```
+
+### Prompt Templates
+
+- **`chat_init.md`**: Main conversational AI prompt with behavioral rules
+- **`evaluator.md`**: Response quality control and hallucination detection
+- **`evaluator_with_github_context.md`**: Enhanced evaluator for GitHub tool responses
+- **`job_match_analysis.md`**: Job matching analysis
+- **`chat_rerun.md`**: Response regeneration with evaluator feedback
+- **`chat_base.md`**: Base conversational prompt without evaluation context
+
+### Benefits
+
+- **🔧 Maintainable**: Edit prompts without touching Python code
+- **📋 Version Control Friendly**: Clear diffs for prompt changes
+- **🧩 Composable**: Build complex prompts from reusable components
+- **🎯 Consistent**: Unified variable substitution approach
+- **🧪 Testable**: Prompts can be tested independently
 
 ## Installation
 
@@ -55,7 +113,7 @@ personal-ai/
    uv venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    uv pip install -r requirements.txt
-   
+
    # Alternative: Install using pyproject.toml
    # uv pip install -e .
    ```
@@ -82,7 +140,7 @@ personal-ai/
    Create a `.env` file in the parent directory with:
    ```env
    OPENAI_API_KEY=your_openai_api_key
-   GEMINI_API_KEY=your_gemini_api_key  # For evaluation
+   GEMINI_API_KEY=your_gemini_api_key    # For evaluation
    GITHUB_USERNAME=your_github_username  # Optional
    GITHUB_TOKEN=your_github_token        # Optional, for higher rate limits
    PUSHOVER_USER=your_pushover_user      # Optional
@@ -99,18 +157,13 @@ personal-ai/
 
 ### Basic Usage
 ```bash
-python main.py
-```
-
-### Legacy Compatibility
-```bash
 python career_chatbot.py
 ```
 
 ### Programmatic Usage
 ```python
 from models import ChatbotConfig
-from chatbot import CareerChatbot
+from career_chatbot import CareerChatbot
 
 config = ChatbotConfig(
     name="Your Name",
@@ -119,6 +172,19 @@ config = ChatbotConfig(
 
 chatbot = CareerChatbot(config)
 chatbot.launch_interface()
+```
+
+### Prompt Customization
+```python
+from promptkit import render
+
+# Custom prompt rendering
+vars = {
+    "config": config,
+    "context": context,
+    "current_date": "September 6, 2025"
+}
+prompt = render("prompts/chat_init.md", vars)
 ```
 
 ## Configuration
@@ -161,18 +227,28 @@ The job matching system uses a sophisticated 6-level hierarchy:
 
 ## Quality Control
 
-Built-in evaluation system prevents hallucinations:
+Evaluation system with template-based prompts prevents hallucinations:
 
-- **Factual Validation**: All claims verified against source documents
-- **Tool Usage Verification**: Ensures appropriate tool selection
+### Evaluation Features
+- **Factual Validation**: All claims verified against source documents and GitHub tool results
+- **Tool Usage Verification**: Ensures appropriate tool selection and detects missing tool calls
 - **Behavioral Rules**: Enforces proper contact facilitation logic
-- **Retry Mechanism**: Automatically regenerates poor responses
+- **Date Context Awareness**: Proper temporal validation using system date context
+- **GitHub Tool Integration**: Special handling for repository data and metadata
+- **Retry Mechanism**: Automatically regenerates poor responses with evaluator feedback
 
-## Deployment
+### Evaluation Templates
+- **Base Evaluator**: Strict validation against resume/LinkedIn context
+- **GitHub-Enhanced**: Accepts repository data as legitimate additional context
+- **Job Matching**: Specialized evaluation for technical skill assessments
 
-### Hugging Face Spaces
+### Evaluation Process
+1. **Structured Response Generation**: AI provides response with reasoning and evidence
+2. **Context-Aware Evaluation**: Template-based evaluation with current date and tool context
+3. **Automatic Retry**: Failed responses regenerated with specific feedback
+4. **Quality Assurance**: Only validated responses reach the user
 
-The legacy wrapper ensures seamless deployment to Hugging Face Spaces without any configuration changes.
+## Development
 
 ### Local Development
 
@@ -182,26 +258,38 @@ The legacy wrapper ensures seamless deployment to Hugging Face Spaces without an
 uv venv
 source .venv/bin/activate
 
-# Install dependencies (choose one)
+# Install dependencies
 uv pip install -r requirements.txt
-# OR install with pyproject.toml including dev dependencies
-uv pip install -e ".[dev]"
 
 # Run the application
-python main.py
+python career_chatbot.py
 
 # Optional: Run with development tools
-ruff check .  # Linting
-black .       # Code formatting
+ruff check .  # Linting (if configured)
 ```
 
 **With pip:**
 ```bash
-# Install in development mode
-pip install -e .
+# Install dependencies
+pip install -r requirements.txt
 
-# Run with hot reload (if using Gradio's reload feature)
-python main.py
+# Run the application
+python career_chatbot.py
+```
+
+### Prompt Development
+
+Edit prompts directly in the `prompts/` directory:
+
+```bash
+# Edit main chat prompt
+vim prompts/chat_init.md
+
+# Edit evaluator prompt
+vim prompts/evaluator.md
+
+# Test changes immediately - no restart required
+# Prompts are loaded fresh on each request
 ```
 
 ## Example Interactions
@@ -215,33 +303,15 @@ python main.py
 **GitHub Projects:**
 > "Can you show me some of their open source work?"
 
-## Migration from Monolith
-
-If upgrading from the original monolithic version:
-
-1. The modular version is fully backward compatible
-2. All existing imports continue to work
-3. No deployment configuration changes needed
-4. Original `career_chatbot.py` now acts as a compatibility wrapper
-
 ## Testing
 
 ```bash
-# Test basic imports
-python -c "import career_chatbot; print('Legacy compatibility works')"
+# Test the application
+python career_chatbot.py
 
-# Test modular imports
-python -c "from chatbot import CareerChatbot; print('Modular structure works')"
+# Test prompt rendering
+python -c "from promptkit import render; print('Template system works')"
+
+# Test model imports
+python -c "from models import ChatbotConfig; print('Models loaded successfully')"
 ```
-
-## License
-
-This project is part of the Agentic AI Engineering Course community contributions.
-
-## Contributing
-
-This is a community contribution demonstrating modular architecture principles for AI applications. Feel free to use this structure as a template for your own AI assistant projects.
-
-## Contact
-
-This AI assistant was built by Amir Nathoo as a practical demonstration of modular AI application architecture using LLMs and agentic systems.
