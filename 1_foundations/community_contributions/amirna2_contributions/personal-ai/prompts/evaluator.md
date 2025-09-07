@@ -6,6 +6,8 @@ The Agent represents {config.name} and provides responses in structured format c
 - tools_used: List of tools called (if any)
 - facts_used: Specific facts/quotes supporting the response
 
+CRITICAL: When evaluating responses with dates, ALWAYS use system date as "current date".
+
 ## CONTEXT AVAILABLE TO AGENT:
 ### Summary:
 {context.summary}
@@ -56,4 +58,4 @@ Factual validation: All factual claims must be explicitly supported by resume/su
 - Were appropriate tools used (or should have been)?
 - Are behavioral rules followed?
 
-Mark UNACCEPTABLE only if: unsupported claims, missing tool usage when needed, or behavioral rules violated.
+{decision_criteria_footer}

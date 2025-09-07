@@ -288,11 +288,16 @@ class Evaluator:
                                     api_key=os.getenv("GEMINI_API_KEY"),
                                     base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
                                 )
-
+        # Initial system prompt without GitHub context will generic footer
         self.system_prompt = self._create_evaluator_prompt()
 
-    def _create_evaluator_prompt(self) -> str:
+    def _create_evaluator_prompt(self, decision_criteria_footer=None) -> str:
         """Create the evaluator system prompt"""
+        if decision_criteria_footer is None:
+            decision_criteria_footer = "Mark UNACCEPTABLE only if: unsupported claims, missing tool usage when needed, or behavioral rules violated."
+
+        # Get current date for evaluator context
+        current_date = datetime.now().strftime("%B %d, %Y")
 
         # Debug logging for evaluator context
         resume_length = len(self.context['resume'])
@@ -314,7 +319,9 @@ class Evaluator:
         vars = {
             "config": self.config,
             "context": self.context,
-            "job_match_threshold": self.config.job_match_threshold if self.config else "Good"
+            "job_match_threshold": self.config.job_match_threshold if self.config else "Good",
+            "decision_criteria_footer": decision_criteria_footer,
+            "current_date": current_date
         }
         prompt = render("prompts/evaluator.md", vars)
         return prompt
@@ -379,7 +386,8 @@ Is this response acceptable? Provide specific feedback about any issues."""
             is_job_matching = self._is_job_matching_context(structured_reply, message, history)
 
             # Check if GitHub tools were used
-            github_tools_used = any(tool in structured_reply.tools_used for tool in ['search_github_repos', 'get_repo_details'])
+            logger.info(f"STRUCTURED REPLY TOOLS_USED: {structured_reply.tools_used}")
+            github_tools_used = any(tool in structured_reply.tools_used for tool in ['search_github_repos', 'get_repo_details', 'functions.search_github_repos', 'functions.get_repo_details'])
             logger.info(f"GITHUB TOOLS USED: {github_tools_used}")
 
             if is_job_matching:
@@ -498,27 +506,21 @@ Facts used: {structured_reply.facts_used}
 
     def _create_evaluator_prompt_with_github(self, github_context: str) -> str:
         """Create evaluator prompt including GitHub tool results as valid context"""
-        base_prompt = self._create_evaluator_prompt()
-
         if github_context:
-            enhanced_prompt = base_prompt.replace(
-                "Mark UNACCEPTABLE only if: unsupported claims, missing tool usage when needed, or behavioral rules violated.",
-                f"""## GitHub Tool Results (VALID CONTEXT):
-{github_context}
+            # Get base evaluator content WITHOUT footer (empty string)
+            base_evaluator_prompt = self._create_evaluator_prompt("")
 
-IMPORTANT: GitHub tool results above are LEGITIMATE CONTEXT.
+            # Get current date for GitHub evaluator context
+            current_date = datetime.now().strftime("%B %d, %Y")
 
-When evaluating responses about programming languages, repositories, or technical projects:
-1. GitHub tool results are VALID and should be considered alongside resume/LinkedIn
-2. Programming languages found in GitHub repos are FACTUAL, not hallucinations
-3. The agent should synthesize information from resume/LinkedIn AND GitHub tool results
-4. Only reject if GitHub results contradict the general technical background in resume/LinkedIn
-
-Mark UNACCEPTABLE only if: unsupported claims NOT supported by either the static context OR valid GitHub tool results, missing tool usage when needed, or behavioral rules violated."""
-            )
-            return enhanced_prompt
-
-        return base_prompt
+            vars = {
+                "base_evaluator_prompt": base_evaluator_prompt,
+                "github_context": github_context,
+                "current_date": current_date
+            }
+            return render("prompts/evaluator_with_github_context.md", vars)
+        else:
+            return self._create_evaluator_prompt()
 
     def _extract_github_context_from_history(self, history: List[Dict]) -> str:
         """Extract GitHub tool results from conversation history"""
