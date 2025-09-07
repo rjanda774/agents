@@ -343,13 +343,17 @@ Is this response acceptable? Provide specific feedback about any issues."""
 
     def rerun(self, reply: str, message: str, history: List[Dict], feedback: str) -> StructuredResponse:
         """Regenerate structured response with feedback from failed evaluation"""
-        updated_system_prompt = self._create_base_system_prompt() + "\n\n## Previous answer rejected\nYou just tried to reply, but the quality control rejected your reply\n"
-        updated_system_prompt += f"## Your attempted answer:\n{reply}\n\n"
-        updated_system_prompt += f"## Reason for rejection:\n{feedback}\n\n"
-        updated_system_prompt += "Please provide a corrected structured response that addresses the feedback."
+        base_system_prompt = self._create_base_system_prompt()
+        vars = {
+            'base_system_prompt': base_system_prompt,
+            'reply': reply,
+            'feedback': feedback
+        }
+        updated_system_prompt = render('prompts/chat_rerun.md', vars)
 
         messages = [{"role": "system", "content": updated_system_prompt}] + history + [{"role": "user", "content": message}]
 
+        # Generate new structured response with parsed output
         response = self.evaluator_client.beta.chat.completions.parse(
             model=self.config.evaluator_model,
             messages=messages,
