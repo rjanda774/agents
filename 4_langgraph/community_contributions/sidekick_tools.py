@@ -1,15 +1,16 @@
-import os
-
-import requests
+from playwright.async_api import async_playwright
+from langchain_community.agent_toolkits import PlayWrightBrowserToolkit
 from dotenv import load_dotenv
+import os
+import requests
 from langchain.agents import Tool
-from langchain_community.agent_toolkits import (FileManagementToolkit,
-                                                PlayWrightBrowserToolkit)
+from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_community.tools.wikipedia.tool import WikipediaQueryRun
+from langchain_experimental.tools import PythonREPLTool
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain_community.utilities.wikipedia import WikipediaAPIWrapper
-from langchain_experimental.tools import PythonREPLTool
-from playwright.async_api import async_playwright
+
+
 
 load_dotenv(override=True)
 pushover_token = os.getenv("PUSHOVER_TOKEN")
@@ -31,7 +32,8 @@ def push(text: str):
 
 
 def get_file_tools():
-    toolkit = FileManagementToolkit(root_dir="sandbox")
+    sandbox_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox")
+    toolkit = FileManagementToolkit(root_dir=sandbox_dir)
     return toolkit.get_tools()
 
 
