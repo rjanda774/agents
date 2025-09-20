@@ -32,8 +32,7 @@ def push(text: str):
 
 
 def get_file_tools():
-    sandbox_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox")
-    toolkit = FileManagementToolkit(root_dir=sandbox_dir)
+    toolkit = FileManagementToolkit(root_dir="sandbox")
     return toolkit.get_tools()
 
 
