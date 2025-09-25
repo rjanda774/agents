@@ -25,6 +25,7 @@ Built with compliance officers and ex-auditors. Enhanced by machine intelligence
 ✔ Smart policy templates aligned with SOC 2 trust principles
 ✔ Real-time compliance dashboard for executives & auditors
 ✔ Integrations with AWS, Azure, GCP, Jira, Slack, GitHub & more
+✔ SOC2 certified service - we walk our talk!
 
 ## The ComplAI Advantage
 
