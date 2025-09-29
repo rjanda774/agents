@@ -8,7 +8,7 @@ from opentelemetry import trace
 import openlit
 
 tracer = trace.get_tracer("openai-agents")
-openlit.init()
+openlit.init(tracer=tracer)
 
 class DeepResearchManager:
 
@@ -18,9 +18,9 @@ class DeepResearchManager:
         with tracer.start_as_current_span("deep-research") as current_span:
             print("Starting research...")
             search_plan = await self.plan_searches(query)
-            search_results = await self.perform_searches(search_plan)
-            report = await self.write_report(query, search_results)
-            await self.send_email(report)  
+            #search_results = await self.perform_searches(search_plan)
+            #report = await self.write_report(query, search_results)
+            #await self.send_email(report)  
             print("Hooray!")
 
     async def plan_searches(self, query: str):

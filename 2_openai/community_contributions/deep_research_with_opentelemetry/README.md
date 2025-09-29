@@ -58,6 +58,12 @@ related to LLM's:
 uv add openlit
 ```
 
+We need to upgrade the version of `openai-agents` as well: 
+
+``` bash
+uv add openai-agents==0.2.6
+```
+
 Next, run the following command to add additional instrumentation packages:
 
 ``` bash
