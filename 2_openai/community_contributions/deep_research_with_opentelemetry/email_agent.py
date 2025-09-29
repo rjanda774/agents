@@ -3,6 +3,9 @@ import sendgrid
 import os
 from sendgrid.helpers.mail import Mail, Email, To, Content
 from typing import Dict
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 
 @function_tool
 def send_email(subject: str, html_body: str) -> Dict[str, str]:

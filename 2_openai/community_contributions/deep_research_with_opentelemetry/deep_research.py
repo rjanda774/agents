@@ -5,10 +5,23 @@ from writer_agent import writer_agent, ReportData
 from email_agent import email_agent
 import asyncio
 from opentelemetry import trace
+from opentelemetry import metrics
+from opentelemetry._logs import get_logger_provider
 import openlit
+import os 
 
-tracer = trace.get_tracer("openai-agents")
-openlit.init(tracer=tracer)
+# get the global tracer, meter, and logging provider to pass to OpenLIT initialization
+tracer = trace.get_tracer(__name__)
+meter_provider = metrics.get_meter_provider()
+meter = meter_provider.get_meter(__name__, version="1.0.0")
+logger_provider = get_logger_provider()
+
+openlit.init(tracer=tracer, meter=meter, event_logger=logger_provider)
+
+if os.environ.get('FROM_EMAIL_ADDRESS') is None or os.environ.get('TO_EMAIL_ADDRESS') is None: 
+    print("Ensure the FROM_EMAIL_ADDRESS and TO_EMAIL_ADDRESS environment variables are set")
+    exit()
+
 
 class DeepResearchManager:
 
@@ -18,9 +31,9 @@ class DeepResearchManager:
         with tracer.start_as_current_span("deep-research") as current_span:
             print("Starting research...")
             search_plan = await self.plan_searches(query)
-            #search_results = await self.perform_searches(search_plan)
-            #report = await self.write_report(query, search_results)
-            #await self.send_email(report)  
+            search_results = await self.perform_searches(search_plan)
+            report = await self.write_report(query, search_results)
+            await self.send_email(report)  
             print("Hooray!")
 
     async def plan_searches(self, query: str):

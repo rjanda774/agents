@@ -1,20 +1,21 @@
 # OpenAI Agents SDK Deep Research Example with OpenTelemetry
 
-OpenTelemetry is a popular, open-source solution that can be used to capture telemetry 
-from applications written in various languages, and send the telemetry to an 
+OpenTelemetry is a popular, open-source project that can be used to capture telemetry 
+from applications written in various languages. The telemetry can then be sent to an 
 observability backend of your choice. 
 
 This example demonstrates how [OpenTelemetry](https://opentelemetry.io/) 
-can be used to capture metrics, traces, and logs from the OpenAI Agents SDK Deep Research 
+can be used to capture traces from the OpenAI Agents SDK Deep Research 
 example introduced in Week 2, Lab 4 of the course. 
 
 For our example, we'll send traces to [Jaeger](https://www.jaegertracing.io/), which is an 
-open-source platform for distributed tracing. 
+open-source platform for distributed tracing.  The OpenTelemetry collector configuration 
+can be easily modified to send the traces to a different observability backend, if desired. 
 
 ## Prerequisites
 
 * An OpenAI API key
-* Python 3.12
+* Python 3.12+
 * Docker (required to run the OpenTelemetry Collector and Jaeger)
 * [uv Package Manager](https://docs.astral.sh/uv/guides/install-python/#installing-a-specific-version)
 
@@ -58,7 +59,7 @@ related to LLM's:
 uv add openlit
 ```
 
-We need to upgrade the version of `openai-agents` as well: 
+We need to upgrade the version of `openai-agents` as well (to ensure compatibility with OpenLIT): 
 
 ``` bash
 uv add openai-agents==0.2.6
@@ -80,13 +81,9 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 ```
 
-Some of the instrumentation conflicts with OpenLIT, so let's disable that now: 
-
-``` bash
-export OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=httpx,urllib,requests
-```
-
 Let's also set an environment variable with our email address, to avoid spamming Ed Donner :) 
+
+> Note:  add your email address before running the commands below
 
 ``` bash
 export FROM_EMAIL_ADDRESS=
@@ -101,13 +98,18 @@ First, we imported the following package:
 
 ``` py
 from opentelemetry import trace
+from opentelemetry import metrics
+from opentelemetry._logs import get_logger_provider
 import openlit
 ```
 
-Then we created a new Tracer and initialized OpenLIT: 
+Then we got the global tracer provider, meter provider, and logging provider, and initialized OpenLIT: 
 
 ``` py
-tracer = trace.get_tracer("openai-agents")
+tracer = trace.get_tracer(__name__)
+meter_provider = metrics.get_meter_provider()
+meter = meter_provider.get_meter(__name__, version="1.0.0")
+logger_provider = get_logger_provider()
 openlit.init()
 ```
 
@@ -134,6 +136,18 @@ Execute the following command to run the application:
 uv run opentelemetry-instrument python deep_research.py
 ```
 
-You should see traces in Jaeger that look like the following:
+In Jaeger, we see that our trace had a total duration of 1 minute and 57 seconds: 
 
-![Example trace](./images/trace.png)
+![Trace Timeline](./images/trace-timeline.png)
+
+Clicking on one of the gpt-4o-mini spans, we can see the number of input and output tokens used for this request, the cost, and other 
+attributes: 
+
+![Span Attributes](./images/span-attributes.png)
+
+We can even see the entire prompt and completion text associated with this 
+request, which is helpful for troubleshooting: 
+
+![Log Events](./images/log-events.png)
+
+Capturing the prompt and completion text capture can be disabled if needed. 
