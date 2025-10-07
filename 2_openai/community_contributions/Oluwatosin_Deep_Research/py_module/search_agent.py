@@ -1,5 +1,6 @@
 from agents import Agent, Runner, trace, WebSearchTool , ModelSettings
-from IPython import display, Markdown
+from IPython.display import display, Markdown
+
 
 INSTRUCTIONS = "You are a research assistant. Given a search term, you search the web for that term and \
 produce a concise summary of the results. The summary must be 2-3 paragraphs and less than 300 \

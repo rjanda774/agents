@@ -3,6 +3,8 @@ from email_agent import email_agent
 from search_agent import search_agent
 from writer_agent import writer_agent , ReportData
 from agents import Agent, Runner, trace, gen_trace_id
+from IPython.display import display, Markdown
+
 import asyncio
 
 
