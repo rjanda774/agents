@@ -1,6 +1,6 @@
 # Software Engineering Crew
 
-Welcome to the Software Engineering Crew project, powered by [crewAI](https://crewai.com). This project demonstrates how to use CrewAI to create a complete software engineering team capable of designing, implementing, and testing the backend, as well as building the frontend for complex software projects.
+Welcome to the Software Engineering Crew project, powered by [crewAI](https://crewai.com). This project demonstrates how to use CrewAI to create a complete software engineering team capable of designing, implementing, and testing the backend, as well as building the frontend for complex software projects. Developed with 💜 by Tiago Iesbick.
 
 ## 🚀 What This Project Does
 
