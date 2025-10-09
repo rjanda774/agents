@@ -1,0 +1,37 @@
+chart_analysis_task:
+  description: >
+    Analyse the historical price charts and extract trend information, volatility,
+      and any identifiable market patterns.
+      The current stock symbol is {stock_symbol}.
+  expected_output: >
+  A JSON summary containing:
+      - "trend": (upward, downward, or neutral)
+      - "rationale": explanation of the trend
+      - "confidence": a float between 0 and 1
+  agent: chart_analyst
+
+news_sentiment_task::
+  description: >
+    Review recent financial and business news related to {stock_symbol}.
+      Determine the overall sentiment, tone, and mood of the coverage.
+  expected_output: >
+  A JSON summary containing:
+      - "sentiment": (positive, negative, or neutral)
+      - "rationale": explanation of the sentiment
+      - "confidence": a float between 0 and 1
+  agent: news_analyst
+
+
+ dap_consensus_task:
+    description: >
+      Combine outputs from both domain agents (chart_analyst and news_analyst)
+      using the DAP Protocol. Follow these three stages:
+      1. Intra-cluster consensus: confirm each agent’s internal consistency.
+      2. Inter-cluster negotiation: identify alignment or contradiction between agents.
+      3. Final harmonisation: produce a weighted consensus based on confidence and reliability.
+    expected_output: >
+      A single JSON summary with:
+      - "final_recommendation": (Buy, Hold, or Sell)
+      - "justification": explanation combining both domains
+      - "overall_confidence": float (weighted by confidence)
+    agent: dap_mediator
