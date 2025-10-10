@@ -4,6 +4,7 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 from analyser.mock_api import get_mock_stock_data, get_mock_news_sentiment
 from typing import List
 import yaml
+import os
 
 @CrewBase
 class Analyser():
@@ -11,8 +12,8 @@ class Analyser():
 
     ##agents: List[BaseAgent]
     ##tasks: List[Task]
-    agents_config_path = 'config/agents.yaml'
-    tasks_config_path = 'config/tasks.yaml'
+    agents_config_path = os.path.join(os.path.dirname(__file__), 'config', 'agents.yaml')
+    tasks_config_path = os.path.join(os.path.dirname(__file__), 'config', 'tasks.yaml')
 
     def __init__(self):
         with open(self.agents_config_path, 'r') as f:

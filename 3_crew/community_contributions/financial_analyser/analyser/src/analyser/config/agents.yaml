@@ -1,4 +1,3 @@
-agents:
   chart_analyst:
     role: Quantitative Market Analyst
     goal: >
@@ -28,4 +27,7 @@ agents:
       2. Inter-cluster negotiation,
       3. Final harmonisation.
       Weigh each agent’s confidence and reasoning to produce a unified insight.
+    backstory: >
+      An experienced mediator who combines multiple analyses and ensures a balanced consensus
+      between experts using the DAP Protocol methodology.
     llm: gpt-4o-mini

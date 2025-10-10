@@ -1,4 +1,3 @@
-tasks:
   chart_analysis_task:
     description: >
       Use the provided mock stock data for {stock_symbol} to analyse price movements,
