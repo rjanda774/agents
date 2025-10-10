@@ -3,31 +3,22 @@ from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from analyser.mock_api import get_mock_stock_data, get_mock_news_sentiment
 from typing import List
+import yaml
 
 @CrewBase
 class Analyser():
     """Market Analysis Crew using DAP Protocol"""
 
-    stock_symbol = "AAPL"
-    topic = "Apple stock"
-
-
-        # Fetch mock data
-    stock_data = get_mock_stock_data(stock_symbol)
-    news_data = get_mock_news_sentiment(topic)
-
-    # Inject mock data into crew context
-    context = {
-        "stock_symbol": stock_symbol,
-        "news_topic": topic,
-        "mock_stock_data": stock_data,
-        "mock_news_data": news_data,
-    }
-
     ##agents: List[BaseAgent]
     ##tasks: List[Task]
-    agents_config = 'config/agents.yaml'
-    tasks_config = 'config/tasks.yaml'
+    agents_config_path = 'config/agents.yaml'
+    tasks_config_path = 'config/tasks.yaml'
+
+    def __init__(self):
+        with open(self.agents_config_path, 'r') as f:
+            self.agents_config = yaml.safe_load(f)
+        with open(self.tasks_config_path, 'r') as f:
+            self.tasks_config = yaml.safe_load(f)
 
     
     @agent
@@ -54,7 +45,7 @@ class Analyser():
     @task
     def chart_analysis_task(self) -> Task:
         return Task(
-            config=self.tasks_config['researcchart_analysis_task_task'],
+            config=self.tasks_config['chart_analysis_task'],
         )
 
     @task
@@ -72,16 +63,32 @@ class Analyser():
         )
 
 
-
-
     @crew
     def crew(self) -> Crew:
         """Creates the Analyser crew"""
+
+
+        stock_symbol = "AAPL"
+        topic = "Apple stock"
+
+
+        # Fetch mock data
+        stock_data = get_mock_stock_data(stock_symbol)
+        news_data = get_mock_news_sentiment(topic)
+
+    # Inject mock data into crew context
+        context = {
+            "stock_symbol": stock_symbol,
+            "news_topic": topic,
+            "mock_stock_data": stock_data,
+            "mock_news_data": news_data,
+        }
 
 
         return Crew(
             agents=self.agents, # Automatically created by the @agent decorator
             tasks=self.tasks, # Automatically created by the @task decorator
             process=Process.sequential,
+            context=context,
             verbose=True,
         )
