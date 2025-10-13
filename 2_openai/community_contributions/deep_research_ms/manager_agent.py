@@ -37,7 +37,7 @@ INSTRUCTIONS = (
 )
  
 
-tools = [search_planner, searcher, writer]
+tools = [search_planner, searcher, writer, email]
 
 
 manager_agent = Agent(
