@@ -13,6 +13,9 @@ class validation(BaseModel):
     is_acceptable: bool
     feedback: str
 
+class emailResp(BaseModel):
+    body: str
+    subject: str
 class Person:
 
     def __init__(self):
@@ -39,7 +42,8 @@ class Person:
         You are given a summary of {self.name}'s background and LinkedIn profile which you can use to answer questions. \
         Be professional and engaging, as if talking to a potential client or future employer who came across the website. \
         If you don't know the answer to any question, use your record_unkown_question tool to record the question that you couldn't answer, even if it's about something trivial or unrelated to career. \
-        If the user is engaging in discussion, try to steer them towards getting in touch via email; ask for their email and record it using your store_email tool. "
+        If the user is engaging in discussion, try to steer them towards getting in touch via email; ask for their email and name and record it using your store_email tool."\
+        "If they already provided their name or email do not aks them again . always check the history."
 
         system_prompt += f"\n\n ## Resume :\n{self.resume}\n\n"
         system_prompt += f"With this context, please chat with the user, always staying in character as {self.name}."
@@ -49,6 +53,7 @@ class Person:
         system_prompt = f"""You are acting as {self.name}, creating a follow-up email for a user who recently chatted with {self.name}'s chatbot.
             Your task:
             - Review the chat history provided and craft an engaging, professional email response base on the history
+            - provide relative subject base on the email body you create.
             - Maintain a warm, personable tone while keeping language professional and polite like talking to a potential client or future employer who came cross the website.
             - Include relevant references or light humor from the conversation where appropriate
             - Encourage continued engagement and make the recipient eager to respond
@@ -86,7 +91,6 @@ class Person:
         done = False
         while not done:
             response = self.openai.chat.completions.create(model="gpt-4o-mini", messages=messages, tools=self.tools)
-            print(response)
             if response.choices[0].finish_reason=="tool_calls":
                 message = response.choices[0].message
                 tool_calls = message.tool_calls
@@ -108,33 +112,42 @@ class Person:
         resposne = self.gemeni.beta.chat.completions.parse(model="gemini-2.0-flash", messages=messages, response_format=validation)
         return resposne.choices[0].message.parsed
     
-    def rerun(self,reply,history, feedback):
+    def rerun(self,reply,history, feedback) -> emailResp:
         update_system_prompt = self.email_system_prompt() + "\n\n## Previuos answr rejected \n You just tried to reply, but the quality control rejected your reply"
         update_system_prompt += f"## You attempted to answer: {reply}"
         update_system_prompt += f"## reason for rejection {feedback}"
         messages = [{"role":"user", "content":"Please provide good quality of email resposne."}] + history + [{"role":"system", "content":update_system_prompt}]
-        response = self.openai.chat.completions.create(model="gpt-40-mini", messages=messages)
-        return response.choices[0].messages.content
+        response = self.openai.beta.chat.completions.parse(model="gpt-4o-mini", messages=messages, response_format=emailResp)
+        return response.choices[0].message.parsed
     
     def email(self, sessiondata):
         messages = [{"role": "system", "content": self.email_system_prompt()}] + sessiondata["history"]
-        reply = self.openai.chat.completions.create(model="gpt-4o-mini", messages=messages)
-        print("reply: ", reply)
+        reply = self.openai.beta.chat.completions.parse(model="gpt-4o-mini", messages=messages,response_format=emailResp)
+        resp = reply.choices[0].message.parsed
         evaluation = self.evaluate(reply=reply.choices[0].message.content, history=sessiondata["history"])
-        print("Evaluation: ", evaluation)
         if not evaluation.is_acceptable:
-            reply = self.rerun(reply=reply,history=sessiondata["history"],feedback=evaluation.feedback)
-        self.send_email(sessiondata=sessiondata,reply=reply.choices[0].message.content)
+            reReply = self.rerun(reply=reply,history=sessiondata["history"],feedback=evaluation.feedback)
+            resp = reReply
+        self.send_email(sessiondata=sessiondata,reply=resp)
 
 
-    def send_email(self,sessiondata,reply):
-        print()
-        email = sessiondata["email"]
+    def send_email(self,sessiondata,reply=""):
         msg = MIMEMultipart("alternative")
         msg["From"] = self.emailFrom
+        if  reply:
+            email = sessiondata["email"]
+        else:
+            email = os.getenv("TO_EMAIL")
+
         msg["To"] = email
-        msg["Subject"] = "Thanks for reaching out to my chatbot"
-        msg.attach(MIMEText(reply, "plain"))
+        if not reply:
+            msg["Subject"] = "follow up"
+            body = f"{sessiondata["name"]} reach out to you and had this questions {sessiondata["questions"]} \n and this what we chat {sessiondata["history"]},here is email {sessiondata["email"]}"
+            msg.attach(MIMEText(body, "plain"))
+
+        else:
+            msg["Subject"] = reply.subject
+            msg.attach(MIMEText(reply.body, "plain"))
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.set_debuglevel(1)  # prints SMTP conversation to stdout for debugging
