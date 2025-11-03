@@ -68,10 +68,8 @@ result = Runner.run(email_coordinator, input=user_message)
 ### Step 1: SendGrid Webhook Setup
 
 **Configure SendGrid:**
-1. Dashboard → Settings → Inbound Parse
-2. Hostname: `reply.yourdomain.com`
-3. Webhook URL: `https://yourdomain.com/webhook/email`
-4. DNS: Add MX record pointing to `mx.sendgrid.net`
+
+visit [How to setup webhook](https://www.twilio.com/docs/sendgrid/for-developers/tracking-events/getting-started-event-webhook) for full direction
 
 **When sending emails, set:**
 ```python
