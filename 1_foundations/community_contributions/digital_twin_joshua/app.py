@@ -14,18 +14,24 @@ def push(text):
     token = os.getenv("PUSHOVER_TOKEN")
     user = os.getenv("PUSHOVER_USER")
     if not token or not user:
+        print("Pushover: Missing PUSHOVER_TOKEN or PUSHOVER_USER", flush=True)
         return
     try:
-        requests.post(
+        response = requests.post(
             "https://api.pushover.net/1/messages.json",
             data={
                 "token": token,
                 "user": user,
                 "message": text,
-            }
+            },
+            timeout=10
         )
-    except Exception:
-        pass
+        response.raise_for_status()
+        print(f"Pushover: Message sent successfully", flush=True)
+    except requests.exceptions.RequestException as e:
+        print(f"Pushover: Error sending message - {e}", flush=True)
+    except Exception as e:
+        print(f"Pushover: Unexpected error - {e}", flush=True)
 
 
 def record_user_details(email, name="Name not provided", notes="not provided"):
