@@ -35,32 +35,35 @@ def push(text):
 
 
 def record_user_details(email, name="Name not provided", notes="not provided"):
-    push(f"Recording {name} with email {email} and notes {notes}")
+    print(f"Tool called: record_user_details(email={email}, name={name}, notes={notes})", flush=True)
+    message = f"New contact: {name}\nEmail: {email}\nNotes: {notes}"
+    push(message)
     return {"recorded": "ok"}
 
 
 def record_unknown_question(question):
-    push(f"Recording {question}")
+    print(f"Tool called: record_unknown_question(question={question})", flush=True)
+    push(f"Unanswered question: {question}")
     return {"recorded": "ok"}
 
 
 record_user_details_json = {
     "name": "record_user_details",
-    "description": "Use this tool to record that a user is interested in being in touch and provided an email address",
+    "description": "Use this tool to record that a user is interested in being in touch and provided an email address. Extract the actual email address from the user's message - do not use placeholders like '[email]' or 'email@example.com'. Use the exact email address the user provided.",
     "parameters": {
         "type": "object",
         "properties": {
             "email": {
                 "type": "string",
-                "description": "The email address of this user"
+                "description": "The actual email address provided by the user in their message. Extract it exactly as they wrote it. Must be a real email address, not a placeholder."
             },
             "name": {
                 "type": "string",
-                "description": "The user's name, if they provided it"
+                "description": "The user's name, if they provided it. Use 'Name not provided' if no name was given."
             },
             "notes": {
                 "type": "string",
-                "description": "Any additional information about the conversation that's worth recording to give context"
+                "description": "Any additional information about the conversation that's worth recording to give context. Use 'not provided' if there's nothing notable."
             }
         },
         "required": ["email"],
@@ -124,6 +127,8 @@ class Me:
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
             arguments = json.loads(tool_call.function.arguments)
+            print(f"Tool called: {tool_name}", flush=True)
+            print(f"Arguments: {arguments}", flush=True)
             tool = globals().get(tool_name)
             result = tool(**arguments) if tool else {}
             results.append({"role": "tool", "content": json.dumps(result), "tool_call_id": tool_call.id})
