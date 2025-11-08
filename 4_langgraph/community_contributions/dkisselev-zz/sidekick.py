@@ -107,7 +107,7 @@ class Sidekick:
         
         # Log tool calls if any
         if hasattr(response, "tool_calls") and response.tool_calls:
-            logger.info(f"🔧 TOOL CALLS DETECTED: {len(response.tool_calls)} tool(s)")
+            logger.info(f"TOOL CALLS DETECTED: {len(response.tool_calls)} tool(s)")
             for i, tool_call in enumerate(response.tool_calls):
                 # Handle both dict and object formats
                 tool_name = tool_call.get('name') if isinstance(tool_call, dict) else getattr(tool_call, 'name', 'unknown')
@@ -123,7 +123,7 @@ class Sidekick:
                 if tool_name == 'Python_REPL':
                     # Try different possible argument names
                     code = args.get('query') or args.get('code') or args.get('command') or str(args)
-                    logger.info(f"  🐍 PYTHON CODE TO EXECUTE:")
+                    logger.info(f"  PYTHON CODE TO EXECUTE:")
                     logger.info(f"  {'-'*60}")
                     logger.info(f"  {code}")
                     logger.info(f"  {'-'*60}")
@@ -141,10 +141,10 @@ class Sidekick:
         last_message = state["messages"][-1]
 
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            logger.info("📍 ROUTING: worker → tools")
+            logger.info("ROUTING: worker → tools")
             return "tools"
         else:
-            logger.info("📍 ROUTING: worker → evaluator")
+            logger.info("ROUTING: worker → evaluator")
             return "evaluator"
 
     def format_conversation(self, messages: List[Any]) -> str:
