@@ -12,6 +12,7 @@ This guide explains how to set up secure, isolated Python code execution using A
 2. **Azure Account** 
 
 [Create free account with $250 credit](https://azure.microsoft.com/free/)
+And setup Azure subscription
 
 3. **Login to Azure**
    ```bash
