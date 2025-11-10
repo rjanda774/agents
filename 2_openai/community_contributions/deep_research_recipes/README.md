@@ -3,7 +3,7 @@
 From your project root / venv:
 
 ```bash
-uv pip install sendgrid python-dotenv openai-agents
+uv pip install sendgrid python-dotenv openai-agents gradio
 ```
 
 (You likely already have `agents` and OpenAI SDK from the course setup.)
@@ -23,12 +23,16 @@ SENDGRID_SENDER_EMAIL=your_verified_sender@example.com
 Make sure `SENDGRID_SENDER_EMAIL` is a **verified sender** in your SendGrid account
 (just like in Week 2 Day 2/4 labs).
 
-### Step 3: Run the script
-
-From the repo root, something like:
+### Step 3: Run via CLI
 
 ```bash
 python recipe_manager.py --cuisine "Idli Sambar" --email "test@gmail.com"
+```
+
+### Step 4: Run via Gradio UI
+
+```bash
+python gradio_app.py
 ```
 
 What you’ll see:
