@@ -1,35 +1,74 @@
-"""External service integrations: web scraping and YouTube search"""
+"""External service integrations: Tavily web search and YouTube search"""
 
 import requests
-from typing import List, Dict
+from typing import List, Dict, Optional
+from tavily import TavilyClient
 from src.config import (
-    JINA_URL_TEMPLATE,
-    SCRAPE_TIMEOUT,
-    MAX_SCRAPE_CHARS,
+    TAVILY_API_KEY,
+    TAVILY_MAX_RESULTS,
+    TAVILY_SEARCH_DEPTH,
+    TAVILY_TIMEOUT,
     YOUTUBE_API_KEY,
     YOUTUBE_API_URL,
-    YOUTUBE_MAX_RESULTS
+    YOUTUBE_MAX_RESULTS,
+    YOUTUBE_TIMEOUT
 )
 
 
-def scrape_url(url: str) -> str:
+def search_company_info(company: str, role: str) -> Dict[str, any]:
     """
-    Scrape website content using Jina AI reader
+    Search for company information using Tavily AI search
     
     Args:
-        url: Website URL to scrape
+        company: Company name
+        role: Job role/title
         
     Returns:
-        Scraped content (up to MAX_SCRAPE_CHARS) or empty string on failure
+        Dictionary with 'content' (combined text) and 'sources' (list of URLs)
+        Returns empty content if search fails
     """
     try:
-        jina_url = JINA_URL_TEMPLATE.format(url=url)
-        response = requests.get(jina_url, timeout=SCRAPE_TIMEOUT)
-        if response.status_code == 200:
-            return response.text[:MAX_SCRAPE_CHARS]
-        return ""
-    except Exception:
-        return ""
+        if not TAVILY_API_KEY:
+            return {"content": "", "sources": []}
+        
+        client = TavilyClient(api_key=TAVILY_API_KEY)
+        
+        # Search for company careers, culture, and interview information
+        query = f"{company} company culture careers about {role} interview process"
+        
+        response = client.search(
+            query=query,
+            max_results=TAVILY_MAX_RESULTS,
+            search_depth=TAVILY_SEARCH_DEPTH,
+            include_answer=True,  # Get AI-generated summary
+            include_raw_content=False  # We'll use the cleaned content
+        )
+        
+        # Combine the answer and results content
+        content_parts = []
+        sources = []
+        
+        # Add Tavily's AI answer if available
+        if response.get('answer'):
+            content_parts.append(response['answer'])
+        
+        # Add content from each result
+        for result in response.get('results', []):
+            if result.get('content'):
+                content_parts.append(result['content'])
+            if result.get('url'):
+                sources.append(result['url'])
+        
+        combined_content = "\n\n".join(content_parts)
+        
+        return {
+            "content": combined_content,
+            "sources": sources
+        }
+        
+    except Exception as e:
+        print(f"Tavily search error: {e}")
+        return {"content": "", "sources": []}
 
 
 def search_youtube(company: str, role: str) -> List[Dict[str, str]]:
@@ -57,7 +96,7 @@ def search_youtube(company: str, role: str) -> List[Dict[str, str]]:
             'order': 'relevance'
         }
         
-        response = requests.get(YOUTUBE_API_URL, params=params, timeout=SCRAPE_TIMEOUT)
+        response = requests.get(YOUTUBE_API_URL, params=params, timeout=YOUTUBE_TIMEOUT)
         data = response.json()
         
         videos = []

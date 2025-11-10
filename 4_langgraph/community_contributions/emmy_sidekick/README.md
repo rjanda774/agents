@@ -5,7 +5,7 @@ An AI-powered interview preparation assistant that helps you prepare for job int
 
 ## ✨ Features
 
-- **🏢 Company Research**: Automatically scrapes and summarizes company information
+- **🏢 Company Research**: Uses AI-powered web search to find and summarize company information
 - **📝 Custom Prep Guides**: Generates tailored interview questions and answer tips
 - **📺 YouTube Integration**: Finds relevant interview preparation videos
 - **🔄 Iterative Refinement**: Refine your guide up to 3 times with custom requests
@@ -17,6 +17,7 @@ An AI-powered interview preparation assistant that helps you prepare for job int
 
 - Python 3.11+
 - Groq API key (for LLM)
+- Tavily API key (for web search)
 - YouTube API key (optional, for video search)
 
 ### Installation
@@ -34,11 +35,17 @@ An AI-powered interview preparation assistant that helps you prepare for job int
 
 3. **Set up environment variables**
    
-   Create a `.env` file:
+   Create a `.env` file or export environment variables:
    ```env
    GROQ_API_KEY=your_groq_api_key_here
+   TAVILY_API_KEY=your_tavily_api_key_here
    YOUTUBE_API_KEY=your_youtube_api_key_here  # Optional
    ```
+   
+   **Get API Keys:**
+   - **Groq**: Sign up at [console.groq.com](https://console.groq.com)
+   - **Tavily**: Sign up at [tavily.com](https://tavily.com) (free tier available)
+   - **YouTube**: Get from [Google Cloud Console](https://console.cloud.google.com)
 
 ### Running the Application
 
@@ -106,7 +113,7 @@ Edit `src/config.py` to customize:
 - **LangChain**: LLM framework
 - **Groq**: Fast LLM inference (Llama 3.3 70B)
 - **Gradio**: Web UI
-- **Jina AI**: Web scraping service
+- **Tavily**: AI-powered web search and scraping
 - **YouTube Data API v3**: Video search
 
 ## 🏛️ Architecture
@@ -123,7 +130,7 @@ START → Planner (gather info) → Research → Generate Guide →
 ### State Flow
 
 1. **Gather Info**: Collect company name and role
-2. **Research**: Scrape company website and summarize
+2. **Research**: Search web for company information and summarize
 3. **Generate**: Create interview prep guide with LLM
 4. **Refinement Loop**: Allow user to refine (max 3 times)
 5. **Completion**: Finalize and encourage user
@@ -131,7 +138,7 @@ START → Planner (gather info) → Research → Generate Guide →
 ### Node Functions
 
 - `planner`: Conversational info gathering
-- `research`: Company website scraping
+- `research`: Web search and company information gathering
 - `generate_guide`: LLM-powered guide creation
 - `ask_refinement`: Present guide with options
 - `handle_refinement`: Process user feedback
@@ -154,7 +161,7 @@ This project is for educational purposes.
 
 - **Groq** for fast LLM inference
 - **LangGraph** for workflow orchestration
-- **Jina AI** for web scraping
+- **Tavily** for AI-powered web search
 - **Gradio** for the UI framework
 
 ---

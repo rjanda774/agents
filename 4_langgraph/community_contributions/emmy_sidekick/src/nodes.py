@@ -3,7 +3,7 @@
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.models import State
 from src.llm import llm, planner_llm
-from src.external_services import scrape_url, search_youtube
+from src.external_services import search_company_info, search_youtube
 from src.config import MAX_REFINEMENTS
 
 
@@ -70,28 +70,47 @@ Be friendly and concise!
 
 def research(state: State) -> State:
     """
-    Research the company by scraping their website
+    Research the company using Tavily AI-powered web search
     
     Args:
-        state: Current graph state with company_name
+        state: Current graph state with company_name and role_title
         
     Returns:
         Updated state with company_info summary
     """
     company = state["company_name"]
+    role = state["role_title"]
     
-    # Scrape company website
-    company_url = f"https://www.{company.lower().replace(' ', '')}.com"
-    company_data = scrape_url(company_url)
+    # Search for company information using Tavily
+    search_results = search_company_info(company, role)
+    company_data = search_results.get("content", "")
+    sources = search_results.get("sources", [])
     
-    # Ask LLM to summarize for interview prep
+    # Fallback to LLM knowledge if search fails
+    if not company_data:
+        prompt = f"""
+Based on your knowledge, provide a brief summary of {company} for interview preparation.
+Focus on: mission, products/services, culture, and what makes them unique.
+Keep it to 3-4 sentences.
+"""
+        result = llm.invoke([HumanMessage(content=prompt)])
+        return {
+            "company_info": result.content,
+            "stage": "generate"
+        }
+    
+    # Ask LLM to summarize the search results for interview prep
     prompt = f"""
 Summarize this company for interview prep (3-4 sentences):
 
 Company: {company}
-Website content: {company_data}
+Role: {role}
+
+Information found:
+{company_data}
 
 Focus on: mission, products, culture, and what makes them unique.
+Be concise and relevant for a {role} interview.
 """
     
     result = llm.invoke([HumanMessage(content=prompt)])
