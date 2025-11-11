@@ -27,7 +27,9 @@ class State(TypedDict):
 
 class EvaluatorOutput(BaseModel):
     feedback: str = Field(description="Feedback on the assistant's response")
-    success_criteria_met: bool = Field(description="Whether the success criteria have been met")
+    success_criteria_met: bool = Field(
+        description="Whether the success criteria have been met"
+    )
     user_input_needed: bool = Field(
         description="True if more input is needed from the user, or clarifications, or the assistant is stuck"
     )
@@ -51,7 +53,9 @@ class Sidekick:
         worker_llm = ChatOpenAI(model="gpt-4o-mini")
         self.worker_llm_with_tools = worker_llm.bind_tools(self.tools)
         evaluator_llm = ChatOpenAI(model="gpt-4o-mini")
-        self.evaluator_llm_with_output = evaluator_llm.with_structured_output(EvaluatorOutput)
+        self.evaluator_llm_with_output = evaluator_llm.with_structured_output(
+            EvaluatorOutput
+        )
         await self.build_graph()
 
     def worker(self, state: State) -> Dict[str, Any]:
@@ -63,10 +67,29 @@ class Sidekick:
 
     This is the success criteria:
     {state["success_criteria"]}
-    You should reply either with a question for the user about this assignment, or with your final response.
-    If you have a question for the user, you need to reply by clearly stating your question. An example might be:
 
-    Question: please clarify whether you want a summary or a detailed answer
+    CLARIFYING QUESTIONS RULE (VERY IMPORTANT):
+
+    • In your FIRST response to the user's current request, you MUST ask exactly three clarifying questions.
+    • Ask **exactly** 3 questions — no more and no fewer.
+    • Your message MUST contain ONLY these questions and nothing else.
+      - No greeting
+      - No explanations
+      - No partial answer
+      - No closing sentences
+
+    Use this exact format:
+
+    Q1: <first question>
+    Q2: <second question>
+    Q3: <third question>
+
+    After the user has answered these three questions and you are called again for the same assignment,
+    you MUST NOT ask more clarifying questions. Instead, you should proceed to solve the task according
+    to the success criteria, using tools when they are helpful.
+
+    You should reply either with your three clarifying questions (if you have not yet asked them for this assignment),
+    or with your final response.
 
     If you've finished, reply with the final answer, and don't ask a question; simply reply with the answer.
     """
@@ -79,7 +102,6 @@ class Sidekick:
     With this feedback, please continue the assignment, ensuring that you meet the success criteria or have a question for the user."""
 
         # Add in the system message
-
         found_system_message = False
         messages = state["messages"]
         for message in messages:
@@ -185,7 +207,9 @@ class Sidekick:
         )
         graph_builder.add_edge("tools", "worker")
         graph_builder.add_conditional_edges(
-            "evaluator", self.route_based_on_evaluation, {"worker": "worker", "END": END}
+            "evaluator",
+            self.route_based_on_evaluation,
+            {"worker": "worker", "END": END},
         )
         graph_builder.add_edge(START, "worker")
 
@@ -197,7 +221,8 @@ class Sidekick:
 
         state = {
             "messages": message,
-            "success_criteria": success_criteria or "The answer should be clear and accurate",
+            "success_criteria": success_criteria
+            or "The answer should be clear and accurate",
             "feedback_on_work": None,
             "success_criteria_met": False,
             "user_input_needed": False,
