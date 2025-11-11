@@ -23,6 +23,8 @@ class State(TypedDict):
     feedback_on_work: Optional[str]
     success_criteria_met: bool
     user_input_needed: bool
+    clarifying_done: bool
+    attempt_count: int
 
 
 class EvaluatorOutput(BaseModel):
@@ -39,6 +41,7 @@ class Sidekick:
     def __init__(self):
         self.worker_llm_with_tools = None
         self.evaluator_llm_with_output = None
+        self.clarifier_llm = None
         self.tools = None
         self.llm_with_tools = None
         self.graph = None
@@ -55,13 +58,64 @@ class Sidekick:
 
         self.tools, self.browser, self.playwright = await playwright_tools()
         self.tools += await other_tools()
+
         worker_llm = ChatOpenAI(model="gpt-4o-mini")
         self.worker_llm_with_tools = worker_llm.bind_tools(self.tools)
+
         evaluator_llm = ChatOpenAI(model="gpt-4o-mini")
         self.evaluator_llm_with_output = evaluator_llm.with_structured_output(
             EvaluatorOutput
         )
+
+        self.clarifier_llm = ChatOpenAI(model="gpt-4o-mini")
+
         await self.build_graph()
+
+    # ---------- NEW CLARIFIER NODE ----------
+
+    def clarifier(self, state: State) -> Dict[str, Any]:
+        """
+        First-turn node: asks exactly three clarifying questions and then stops.
+        It does NOT use tools and is NOT evaluated by the evaluator.
+        """
+        system_message = f"""You are a clarifying assistant whose ONLY job is to ask the user exactly three clarifying questions about their task before any work is started.
+
+Rules:
+- Ask exactly 3 questions, no more and no fewer.
+- Do NOT attempt to solve the task.
+- Do NOT give explanations, summaries, or greetings.
+- Your message MUST contain only the three questions.
+
+Use this exact format:
+
+Q1: <first question>
+Q2: <second question>
+Q3: <third question>
+
+Take into account the user's most recent message and, if helpful, this success criteria:
+
+Success criteria:
+{state["success_criteria"]}
+"""
+
+        messages = state["messages"]
+        found_system_message = False
+        for message in messages:
+            if isinstance(message, SystemMessage):
+                message.content = system_message
+                found_system_message = True
+
+        if not found_system_message:
+            messages = [SystemMessage(content=system_message)] + messages
+
+        response = self.clarifier_llm.invoke(messages)
+
+        return {
+            "messages": [response],
+            "clarifying_done": True,
+        }
+
+    # ---------- WORKER / TOOLS / EVALUATOR AS BEFORE ----------
 
     def worker(self, state: State) -> Dict[str, Any]:
         system_message = f"""You are a helpful assistant that can use tools to complete tasks.
@@ -72,29 +126,10 @@ class Sidekick:
 
     This is the success criteria:
     {state["success_criteria"]}
+    You should reply either with a question for the user about this assignment, or with your final response.
+    If you have a question for the user, you need to reply by clearly stating your question. An example might be:
 
-    CLARIFYING QUESTIONS RULE (VERY IMPORTANT):
-
-    • In your FIRST response to the user's current request, you MUST ask exactly three clarifying questions.
-    • Ask **exactly** 3 questions — no more and no fewer.
-    • Your message MUST contain ONLY these questions and nothing else.
-      - No greeting
-      - No explanations
-      - No partial answer
-      - No closing sentences
-
-    Use this exact format:
-
-    Q1: <first question>
-    Q2: <second question>
-    Q3: <third question>
-
-    After the user has answered these three questions and you are called again for the same assignment,
-    you MUST NOT ask more clarifying questions. Instead, you should proceed to solve the task according
-    to the success criteria, using tools when they are helpful.
-
-    You should reply either with your three clarifying questions (if you have not yet asked them for this assignment),
-    or with your final response.
+    Question: please clarify whether you want a summary or a detailed answer
 
     If you've finished, reply with the final answer, and don't ask a question; simply reply with the answer.
     """
@@ -107,6 +142,7 @@ class Sidekick:
     With this feedback, please continue the assignment, ensuring that you meet the success criteria or have a question for the user."""
 
         # Add in the system message
+
         found_system_message = False
         messages = state["messages"]
         for message in messages:
@@ -141,6 +177,10 @@ class Sidekick:
             elif isinstance(message, AIMessage):
                 text = message.content or "[Tools use]"
                 conversation += f"Assistant: {text}\n"
+            elif isinstance(message, dict):
+                role = message.get("role", "assistant")
+                content = message.get("content", "")
+                conversation += f"{role.capitalize()}: {content}\n"
         return conversation
 
     def evaluator(self, state: State) -> State:
@@ -178,6 +218,11 @@ class Sidekick:
         ]
 
         eval_result = self.evaluator_llm_with_output.invoke(evaluator_messages)
+
+        # NEW: increment attempt counter
+        prev_attempts = state.get("attempt_count", 0)
+        attempts = prev_attempts + 1
+
         new_state = {
             "messages": [
                 {
@@ -188,25 +233,54 @@ class Sidekick:
             "feedback_on_work": eval_result.feedback,
             "success_criteria_met": eval_result.success_criteria_met,
             "user_input_needed": eval_result.user_input_needed,
+            "attempt_count": attempts,   # NEW
         }
         return new_state
-
+    
     def route_based_on_evaluation(self, state: State) -> str:
+        attempts = state.get("attempt_count", 0)
+
+        # If we've already tried 3 times, stop looping and accept the last answer.
+        if attempts >= 3:
+            return "END"
+
         if state["success_criteria_met"] or state["user_input_needed"]:
             return "END"
         else:
             return "worker"
 
+    # ---------- ENTRY ROUTER FOR FIRST-TURN CLARIFIER ----------
+
+    def entry_router(self, state: State) -> str:
+        """
+        Decides whether to start at the clarifier (first turn) or the worker (later turns).
+        """
+        if state.get("clarifying_done"):
+            return "worker"
+        else:
+            return "clarifier"
+
     async def build_graph(self):
         # Set up Graph Builder with State
         graph_builder = StateGraph(State)
 
-        # Add nodes
+        # Nodes
+        graph_builder.add_node("clarifier", self.clarifier)
         graph_builder.add_node("worker", self.worker)
         graph_builder.add_node("tools", ToolNode(tools=self.tools))
         graph_builder.add_node("evaluator", self.evaluator)
 
-        # Add edges
+        # START → clarifier or worker, depending on flag
+        graph_builder.add_conditional_edges(
+            START,
+            self.entry_router,
+            {"clarifier": "clarifier", "worker": "worker"},
+        )
+
+        # Clarifier simply ends the graph for that turn
+        graph_builder.add_edge("clarifier", END)
+
+        # Worker / tools / evaluator loop as before
         graph_builder.add_conditional_edges(
             "worker", self.worker_router, {"tools": "tools", "evaluator": "evaluator"}
         )
@@ -216,27 +290,66 @@ class Sidekick:
             self.route_based_on_evaluation,
             {"worker": "worker", "END": END},
         )
-        graph_builder.add_edge(START, "worker")
 
-        # Compile the graph
+        # Compile the graph with checkpointing
         self.graph = graph_builder.compile(checkpointer=self.memory)
 
     async def run_superstep(self, message, success_criteria, history):
+        """
+        message: current user text (string)
+        success_criteria: text from box (string)
+        history: list of {"role": ..., "content": ...} for Gradio Chatbot display
+        """
         config = {"configurable": {"thread_id": self.sidekick_id}}
 
+        # Always treat new input as a fresh HumanMessage;
+        # previous turns are pulled from the checkpointer.
         state = {
-            "messages": message,
+            "messages": [HumanMessage(content=message)],
             "success_criteria": success_criteria
             or "The answer should be clear and accurate",
             "feedback_on_work": None,
             "success_criteria_met": False,
             "user_input_needed": False,
+            # clarifying_done is intentionally omitted so stored value in checkpoint is used
         }
+
         result = await self.graph.ainvoke(state, config=config)
+
         user = {"role": "user", "content": message}
-        reply = {"role": "assistant", "content": result["messages"][-2].content}
-        feedback = {"role": "assistant", "content": result["messages"][-1].content}
-        return history + [user, reply, feedback]
+
+        def get_msg_content(msg: Any) -> str:
+            """Safely extract content from AIMessage/HumanMessage/SystemMessage or dict."""
+            if isinstance(msg, (AIMessage, HumanMessage, SystemMessage)):
+                return msg.content
+            if isinstance(msg, dict):
+                return msg.get("content", "")
+            # Fallback, just in case
+            return str(msg)
+
+        # If evaluator has run, feedback_on_work will be non-None OR flags will be set
+        if (
+            result.get("feedback_on_work") is not None
+            or result.get("success_criteria_met")
+            or result.get("user_input_needed")
+        ):
+            # Normal worker + evaluator turn
+            worker_msg = result["messages"][-2]
+            eval_msg = result["messages"][-1]
+
+            worker_content = get_msg_content(worker_msg)
+            eval_content = get_msg_content(eval_msg)
+
+            reply = {"role": "assistant", "content": worker_content}
+            feedback = {"role": "assistant", "content": eval_content}
+            return history + [user, reply, feedback]
+
+        else:
+            # Clarifier-only turn: just send the clarifying questions
+            last_msg = result["messages"][-1]
+            reply_content = get_msg_content(last_msg)
+            reply = {"role": "assistant", "content": reply_content}
+            return history + [user, reply]
 
     def cleanup(self):
         if self.browser:
