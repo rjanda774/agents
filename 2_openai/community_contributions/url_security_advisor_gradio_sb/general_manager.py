@@ -18,10 +18,8 @@ class GeneralManager:
             checks_plan = await self.plan_checks(url, email_to)
             print(checks_plan, "CHECK PLAN PRINTED")
             if isinstance(checks_plan, list):
-                # Combine messages as a string
                 messages_as_str = [str(msg) for msg in checks_plan]
                 combined_msg = "\n".join(f"⚠️ {msg}" for msg in messages_as_str)
-                # Yield as a tuple: first output = Markdown string, second = progress bar
                 yield combined_msg
                 return
             else:
@@ -31,7 +29,12 @@ class GeneralManager:
                 report = await self.report(url, checks)
                 if email_to:
                     yield f"Sending email to {email_to}..."
-                    await self.send_email("wieczoreks@hotmail.com", email_to, report)
+                    try:
+                        await self.send_email("wieczoreks@hotmail.com", email_to, report)
+                        yield "Email sent successfully ✔️"
+                    except Exception as e:
+                        print("Email sending failed:", e)
+                        yield f"⚠️ Failed to send email to {email_to}. Error: {e}"
                 else:
                     yield "No email provided — skipping email delivery."
                 yield "Completed report ✅"
@@ -51,13 +54,11 @@ class GeneralManager:
             info = getattr(e, "output_info", {}) or {}
             messages = []
 
-            # Try structured info first
             if info.get("is_url") is False:
                 messages.append("URL validation failed.")
             if info.get("is_email") is False:
                 messages.append("Email validation failed.")
 
-            # Fallback: parse exception message if output_info is empty
             if not messages:
                 msg_text = str(e)
                 if "email" in msg_text.lower():
@@ -65,7 +66,6 @@ class GeneralManager:
                 if "url" in msg_text.lower():
                     messages.append("URL validation failed.")
 
-            # Final fallback if still empty
             if not messages:
                 messages.append("Guardrail triggered: invalid input detected.")
 

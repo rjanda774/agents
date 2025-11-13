@@ -1,4 +1,5 @@
 from agents import Agent
+
 check_manager_instruction = """You are security manager in the field of IT software security
       Follow these steps carefuly:
       1. Analyze two security checks about provided url 
@@ -15,6 +16,4 @@ check_manager_agent = Agent(
     name="Security Manager",
     instructions=check_manager_instruction,
     model="gpt-4o-mini",
-    #tools=security_tools,
-    #handoffs=handoff_mailer
 )
