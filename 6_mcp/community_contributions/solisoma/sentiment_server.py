@@ -208,3 +208,6 @@ async def analyze_overall_sentiment() -> str:
     except Exception as e:
         return f"Error analyzing market sentiment: {str(e)}"
 
+
+if __name__ == "__main__":
+    mcp.run(transport='stdio')
