@@ -16,7 +16,6 @@ class GeneralManager:
             yield f"Planning checks... View trace: https://platform.openai.com/traces/trace?trace_id={trace_id}"
             print("Planning checks...")
             checks_plan = await self.plan_checks(url, email_to)
-            print(checks_plan, "CHECK PLAN PRINTED")
             if isinstance(checks_plan, list):
                 messages_as_str = [str(msg) for msg in checks_plan]
                 combined_msg = "\n".join(f"⚠️ {msg}" for msg in messages_as_str)
@@ -48,9 +47,7 @@ class GeneralManager:
                 check_planner_agent, 
                 f"Url: {url}, Email to : {email_to}"
             )
-            print(result, "CHECK RESULT")
         except InputGuardrailTripwireTriggered as e:
-            print(e, "INSIDE InputGuardrailTripwireTriggered")
             info = getattr(e, "output_info", {}) or {}
             messages = []
 
@@ -58,17 +55,14 @@ class GeneralManager:
                 messages.append("URL validation failed.")
             if info.get("is_email") is False:
                 messages.append("Email validation failed.")
-
             if not messages:
                 msg_text = str(e)
                 if "email" in msg_text.lower():
                     messages.append("Email validation failed.")
                 if "url" in msg_text.lower():
                     messages.append("URL validation failed.")
-
             if not messages:
                 messages.append("Guardrail triggered: invalid input detected.")
-
             print(e, "Guardrail triggered in check planner:", " ".join(messages))
             return messages
         else: 
