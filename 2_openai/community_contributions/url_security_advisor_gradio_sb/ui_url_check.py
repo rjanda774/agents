@@ -17,9 +17,8 @@ total = len(stages)
 gm = GeneralManager()
 
 async def run(url: str, email:str):
-    email = email or None  # convert empty string "" to None
+    email = email or None  
     progress = 0
-    #yield(url)
     async for part in gm.run(url, email):
         progress = min(progress + (100 / total), 100)
         yield part, gr.update(value=progress)
@@ -37,10 +36,17 @@ with gr.Blocks(theme=gr.themes.Soft(),  css="""
     """) as demo:
     with gr.Row():
         with gr.Column(scale=1):
-            image = gr.Image("https_advisor.png",height=100,width=100)
+            image = gr.Image(
+                "https_advisor.png",
+                height=100,
+                width=100, 
+                show_label=False,
+                interactive=False,
+            )
         with gr.Column(scale=11):
             gr.Markdown("# 🔒 URL Security Advisor")
-            gr.Markdown("## Get a detailed audit of your website's security configuration")
+            gr.Markdown("## Get a detailed audit of your url security configuration")
+            gr.Markdown("<div style='color:#6366f1;'>Sending email might fail if emails are bounced back or when free trial is finished :)</div>")
     with gr.Row():
         with gr.Column():
             url = gr.Textbox(label="Url to be checked out")
@@ -50,12 +56,10 @@ with gr.Blocks(theme=gr.themes.Soft(),  css="""
         with gr.Column(scale=1):
             email = gr.Textbox(label="Email to send the report to")
             progress_bar = gr.Slider(0, 100, value=0, interactive=False, label="Progress (%)")
-    #with gr.Row():
-    #    security_report = gr.Markdown(label="Security Report")
-    gr.Markdown("<br>")  # one line of space
+    gr.Markdown("<br>") 
     with gr.Row():
         with gr.Column():
-            gr.Markdown("<br>")  # one line of space
+            gr.Markdown("<br>")  
             security_report = gr.Markdown(label="Security Report")
     button.click(fn=run, inputs=[url, email], outputs=[security_report, progress_bar])
 demo.launch()
