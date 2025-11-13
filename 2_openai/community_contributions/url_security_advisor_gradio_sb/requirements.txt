@@ -6,7 +6,6 @@ openai
 openai-agents
 dotenv
 agents
-os
 guardrail_agent
 pydantic
 typing
