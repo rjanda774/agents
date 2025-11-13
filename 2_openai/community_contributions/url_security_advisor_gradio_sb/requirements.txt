@@ -6,9 +6,5 @@ openai
 openai-agents
 dotenv
 agents
-guardrail_agent
 pydantic
-typing
 sendgrid
-sendgrid.helpers.mail
-agents.exceptions
