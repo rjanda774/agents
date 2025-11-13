@@ -1,340 +1,217 @@
-"""LLM-driven orchestration for the MCP video tools."""
+"""Orchestrate the MCP video tools via the OpenAI Agents SDK."""
 
 from __future__ import annotations
 
 import json
 import os
+import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Any, AsyncIterator, List, Optional, Tuple
 
-from .mcp_tools import (
-    get_video_metadata,
-    compress_video,
-    extract_audio,
-    convert_format,
-    resize_video,
-    extract_thumbnail,
-    trim_video,
-)
+from agents import Agent, Runner
+from agents.exceptions import AgentsException
+from agents.items import RunItem, ToolCallItem, ToolCallOutputItem
+from agents.mcp import MCPServerStdio
 
-TOOL_MAP = {
-    "get_video_metadata": get_video_metadata,
-    "compress_video": compress_video,
-    "extract_audio": extract_audio,
-    "convert_format": convert_format,
-    "resize_video": resize_video,
-    "extract_thumbnail": extract_thumbnail,
-    "trim_video": trim_video,
-}
+from .mcp_tools import get_video_metadata
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_video_metadata",
-            "description": "Get detailed metadata about a video file including duration, size, resolution, codecs",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "video_path": {
-                        "type": "string",
-                        "description": "Full path to the video file",
-                    }
-                },
-                "required": ["video_path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "compress_video",
-            "description": "Compress a video to reduce file size.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "video_path": {
-                        "type": "string",
-                        "description": "Full path to the video file",
-                    },
-                    "quality": {
-                        "type": "string",
-                        "enum": ["low", "medium", "high"],
-                        "description": "Compression quality",
-                    },
-                },
-                "required": ["video_path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "extract_audio",
-            "description": "Extract audio from a video file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "video_path": {
-                        "type": "string",
-                        "description": "Full path to the video file",
-                    },
-                    "format": {
-                        "type": "string",
-                        "enum": ["mp3", "wav", "aac", "flac"],
-                        "description": "Target audio format",
-                    },
-                    "quality": {
-                        "type": "string",
-                        "enum": ["low", "medium", "high"],
-                        "description": "Audio quality",
-                    },
-                },
-                "required": ["video_path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "convert_format",
-            "description": "Convert video to a different container/codec.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "video_path": {
-                        "type": "string",
-                        "description": "Full path to the video file",
-                    },
-                    "output_format": {
-                        "type": "string",
-                        "enum": ["mp4", "webm", "avi", "mov", "mkv", "gif"],
-                        "description": "Desired format",
-                    },
-                },
-                "required": ["video_path", "output_format"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "resize_video",
-            "description": "Resize video to a preset resolution.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "video_path": {
-                        "type": "string",
-                        "description": "Full path to the video file",
-                    },
-                    "resolution": {
-                        "type": "string",
-                        "enum": ["480p", "720p", "1080p", "1440p", "4k"],
-                        "description": "Target resolution",
-                    },
-                },
-                "required": ["video_path", "resolution"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "extract_thumbnail",
-            "description": "Extract a thumbnail image from a video.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "video_path": {
-                        "type": "string",
-                        "description": "Full path to the video file",
-                    },
-                    "timestamp": {
-                        "type": "number",
-                        "description": "Timestamp in seconds",
-                    },
-                },
-                "required": ["video_path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "trim_video",
-            "description": "Extract a segment from the video.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "video_path": {
-                        "type": "string",
-                        "description": "Full path to the video file",
-                    },
-                    "start_time": {
-                        "type": "number",
-                        "description": "Start time in seconds",
-                    },
-                    "end_time": {
-                        "type": "number",
-                        "description": "End time in seconds",
-                    },
-                    "duration": {
-                        "type": "number",
-                        "description": "Duration in seconds",
-                    },
-                },
-                "required": ["video_path"],
-            },
-        },
-    },
-]
+MAX_TURNS = 5
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MCP_ENTRYPOINT = "mcp_server"
 
 
-async def execute_tool(tool_name: str, arguments: Dict[str, Any]):
-    tool = TOOL_MAP.get(tool_name)
-    if not tool:
-        return {"error": f"Unknown tool: {tool_name}"}
-    return await tool(**arguments)
+@asynccontextmanager
+async def launch_mcp_server() -> AsyncIterator[MCPServerStdio]:
+    """Launch the FastMCP server via stdio and ensure it is cleaned up."""
+
+    params = {
+        "command": sys.executable,
+        "args": ["-m", MCP_ENTRYPOINT],
+        "cwd": str(PROJECT_ROOT),
+        "env": os.environ.copy(),
+    }
+    server = MCPServerStdio(params, cache_tools_list=True, name="video-tools-mcp")
+    await server.connect()
+    try:
+        yield server
+    finally:
+        await server.cleanup()
 
 
 async def process_request(
     video_path: str,
     user_request: str,
-    llm_client,
     model: str,
 ) -> Tuple[str, Optional[List[str]]]:
     if not video_path:
         return "Please upload a video first!", None
 
     video_info = await get_video_metadata(video_path)
-    system_prompt = f"""You are an autonomous video processing agent. The user has uploaded a video:
+    instructions = _build_instructions(video_path, video_info, user_request)
 
-CURRENT VIDEO STATE:
-- File: {Path(video_path).name}
-- Duration: {video_info.get('duration_formatted', 'unknown')}
-- Size: {video_info.get('size_mb', 'unknown')}MB
-- Resolution: {video_info.get('width', '?')}x{video_info.get('height', '?')}
-- Format: {video_info.get('format', 'unknown')}
+    try:
+        async with launch_mcp_server() as server:
+            agent = Agent(
+                name="Video Processor",
+                instructions=instructions,
+                model=model,
+                mcp_servers=[server],
+            )
+            run_result = await Runner.run(agent, user_request, max_turns=MAX_TURNS)
+    except AgentsException as exc:
+        return f"❌ Agent run failed: {exc}", None
+    except Exception as exc:  # pragma: no cover - defensive logging
+        return f"❌ Error processing request: {exc}", None
+
+    operations_log = _build_operations_log(run_result.new_items)
+    output_files = _extract_file_outputs(run_result.new_items)
+
+    final_text = (
+        str(run_result.final_output)
+        if run_result.final_output is not None
+        else "Agent completed without a final summary."
+    )
+    steps_summary = (
+        f"\n\n🔧 Steps executed: {' → '.join(operations_log)}"
+        if operations_log
+        else ""
+    )
+
+    return f"✅ {final_text}{steps_summary}", (output_files or None)
+
+
+def _build_instructions(video_path: str, video_info: dict[str, Any], user_request: str) -> str:
+    state = _format_video_state(video_path, video_info)
+    return f"""You are an autonomous video processing agent powered by a FastMCP server.
+{state}
 
 USER GOAL: {user_request}
 
 IMPORTANT RULES:
-1. ALWAYS use this exact video_path: {video_path}
-2. You can call MULTIPLE tools to achieve the goal
-3. After each tool, evaluate if you need to do more
-4. For complex requests (like "optimize for Instagram"), break it into steps:
-   - First, understand requirements (Instagram: square, <100MB, etc.)
-   - Then execute operations in order (resize → compress → verify)
-5. When you update the video_path (after resize/compress/convert), use the NEW path for next operations
-6. Only stop when the user's goal is fully achieved
+1. ALWAYS operate on this exact video_path: {video_path}
+2. Call the MCP tools as many times as needed. They already wrap FFmpeg safely.
+3. Update your mental model of the current video after each tool completes.
+4. For platform requests (Instagram, YouTube, Twitter, Email, WhatsApp) make sure
+   the output meets the documented constraints before you stop.
+5. Only finish once the user's goal is satisfied and you've confirmed any size/format targets.
 
-AVAILABLE TOOLS:
-- get_video_metadata: Check current video properties
-- compress_video: Reduce file size (quality: low/medium/high)
-- extract_audio: Get audio (formats: mp3/wav/aac/flac)
-- convert_format: Change format (mp4/webm/avi/mov/mkv/gif)
-- resize_video: Change resolution (480p/720p/1080p/1440p/4k)
-- extract_thumbnail: Get preview image (specify timestamp)
-- trim_video: Extract a segment/clip (use start_time + duration OR start_time + end_time)
+AVAILABLE TOOLS ARE PROVIDED BY THE CONNECTED MCP SERVER.
+Use them whenever you need to inspect, transform, or export media."""
 
-PLATFORM REQUIREMENTS (use these when user mentions platforms):
-- Instagram: Square (1080x1080), <100MB, MP4
-- YouTube: 1080p or higher, MP4/WebM
-- Twitter: <512MB, MP4/MOV
-- Email: <25MB, compressed, 720p or lower
-- WhatsApp: <16MB, MP4, 720p
 
-Think step-by-step and execute all necessary operations to achieve the user's goal."""
+def _format_video_state(video_path: str, video_info: dict[str, Any]) -> str:
+    return """CURRENT VIDEO STATE:
+- File: {name}
+- Duration: {duration}
+- Size: {size}MB
+- Resolution: {width}x{height}
+- Format: {fmt}
+""".format(
+        name=Path(video_path).name,
+        duration=video_info.get("duration_formatted", video_info.get("duration", "unknown")),
+        size=video_info.get("size_mb", "unknown"),
+        width=video_info.get("width", "?"),
+        height=video_info.get("height", "?"),
+        fmt=video_info.get("format", "unknown"),
+    )
 
-    max_iterations = 5
-    iteration = 0
-    current_video_path = video_path
-    final_output_path = None
-    all_output_files: List[str] = []
-    operations_log: List[str] = []
 
+def _build_operations_log(items: List[RunItem]) -> List[str]:
+    log: List[str] = []
+    for item in items:
+        if isinstance(item, ToolCallItem):
+            tool_name = getattr(item.raw_item, "name", None)
+            if tool_name:
+                log.append(f"✓ {tool_name}")
+    return log
+
+
+def _extract_file_outputs(items: List[RunItem]) -> List[str]:
+    paths: List[str] = []
+    seen: set[str] = set()
+
+    for item in items:
+        if not isinstance(item, ToolCallOutputItem):
+            continue
+
+        for candidate in _gather_paths(item.output):
+            if candidate not in seen:
+                seen.add(candidate)
+                paths.append(candidate)
+
+        raw_output = _extract_raw_output(item.raw_item)
+        for candidate in _gather_paths(raw_output):
+            if candidate not in seen:
+                seen.add(candidate)
+                paths.append(candidate)
+
+    return paths
+
+
+def _extract_raw_output(raw_item: Any) -> Any:
+    if raw_item is None:
+        return None
+    if isinstance(raw_item, dict):
+        return raw_item.get("output")
+    return getattr(raw_item, "output", None)
+
+
+def _gather_paths(value: Any) -> List[str]:
+    found: List[str] = []
+    stack: List[Any] = [value]
+
+    while stack:
+        current = stack.pop()
+        if current is None:
+            continue
+
+        if isinstance(current, str):
+            normalized = _normalize_path_candidate(current)
+            if normalized:
+                found.append(normalized)
+                continue
+
+            parsed = _try_parse_json(current)
+            if parsed is not None:
+                stack.append(parsed)
+            continue
+
+        if isinstance(current, dict):
+            for key, val in current.items():
+                if isinstance(val, str) and key.lower().endswith("path"):
+                    normalized = _normalize_path_candidate(val)
+                    if normalized:
+                        found.append(normalized)
+                stack.append(val)
+            continue
+
+        if isinstance(current, (list, tuple)):
+            stack.extend(current)
+
+    return found
+
+
+def _normalize_path_candidate(value: str) -> Optional[str]:
+    stripped = value.strip().strip('"\'')
+    if not stripped:
+        return None
+
+    candidate_path = Path(stripped).expanduser()
+    if not candidate_path.is_absolute():
+        candidate_path = (PROJECT_ROOT / candidate_path).resolve()
+    else:
+        candidate_path = candidate_path.resolve()
+
+    path_str = str(candidate_path)
+    return path_str if os.path.exists(path_str) else None
+
+
+def _try_parse_json(value: str) -> Any:
     try:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_request},
-        ]
-
-        while iteration < max_iterations:
-            iteration += 1
-            response = llm_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-            )
-            message = response.choices[0].message
-
-            if message.tool_calls:
-                messages.append(message)
-                for tool_call in message.tool_calls:
-                    tool_name = tool_call.function.name
-                    arguments = json.loads(tool_call.function.arguments)
-
-                    if "video_path" in arguments:
-                        arg_path = arguments["video_path"]
-                        if not os.path.exists(arg_path):
-                            if (
-                                os.path.basename(current_video_path) == arg_path
-                                or arg_path == video_path
-                            ):
-                                arguments["video_path"] = current_video_path
-
-                    result = await execute_tool(tool_name, arguments)
-                    operations_log.append(f"✓ {tool_name}")
-
-                    if "error" in result:
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "content": json.dumps({"error": result["error"]}),
-                                "tool_call_id": tool_call.id,
-                            }
-                        )
-                        return (
-                            f"❌ Error in step {iteration}: {result['error']}\n\nCompleted: {', '.join(operations_log)}",
-                            final_output_path,
-                        )
-
-                    output_path = result.get("output_path")
-                    if output_path:
-                        all_output_files.append(output_path)
-                        final_output_path = output_path
-                        current_video_path = output_path
-
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "content": json.dumps(result),
-                            "tool_call_id": tool_call.id,
-                        }
-                    )
-            else:
-                final_message = message.content
-                steps_summary = (
-                    f"\n\n🔧 Steps executed: {' → '.join(operations_log)}"
-                    if len(operations_log) > 1
-                    else ""
-                )
-                return f"✅ {final_message}{steps_summary}", (
-                    all_output_files if all_output_files else None
-                )
-
-        return (
-            f"⚠️ Completed {iteration} steps but may not be fully done.\n\n🔧 Steps: {' → '.join(operations_log)}",
-            all_output_files if all_output_files else None,
-        )
-
-    except Exception as exc:  # pragma: no cover - defensive logging
-        return (
-            f"❌ Error processing request: {exc}\n\nCompleted steps: {', '.join(operations_log)}",
-            all_output_files if all_output_files else None,
-        )
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
 
 
-__all__ = ["TOOLS", "process_request"]
+__all__ = ["process_request"]

@@ -2,17 +2,19 @@ import os
 from pathlib import Path
 
 import gradio as gr
+from agents import set_default_openai_client
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from video_processor.agent import process_request
 
 load_dotenv()
-llm_client = OpenAI(
+async_openai_client = AsyncOpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
     timeout=10,
     max_retries=0,
 )
+set_default_openai_client(async_openai_client)
 MODEL = "gpt-4o-mini"
 
 
@@ -30,7 +32,7 @@ async def handle_request(video_file, user_request, progress=gr.Progress()):
         return f"❌ Error: Invalid video file path: {video_path}", None, None
 
     progress(0.3, desc="Processing with AI...")
-    message, output_files = await process_request(video_path, user_request, llm_client, MODEL)
+    message, output_files = await process_request(video_path, user_request, MODEL)
 
     progress(0.9, desc="Finalizing...")
     if output_files:
@@ -173,7 +175,7 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     demo.launch(
-        server_name="0.0.0.0",
+        server_name="127.0.0.1",
         server_port=7860,
         share=False,
     )

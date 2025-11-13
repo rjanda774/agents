@@ -10,6 +10,8 @@ aiofiles==23.2.1
 
 # LLM integration
 openai>=1.0.0               # For GPT-4o mini
+openai-agents==0.4.2        # OpenAI Agents SDK (MCP + Responses integration)
 
 # Utilities
 python-dotenv==1.0.0
+huggingface_hub<0.25
