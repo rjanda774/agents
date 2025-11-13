@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -17,7 +17,6 @@ dependencies = [
     { name = "autogen-ext", extra = ["grpc", "mcp", "ollama", "openai"] },
     { name = "bs4" },
     { name = "gradio" },
-    { name = "holidays" },
     { name = "httpx" },
     { name = "ipywidgets" },
     { name = "langchain-anthropic" },
@@ -60,7 +59,6 @@ requires-dist = [
     { name = "autogen-ext", extras = ["grpc", "mcp", "ollama", "openai"], specifier = ">=0.4.9.2" },
     { name = "bs4", specifier = ">=0.0.2" },
     { name = "gradio", specifier = ">=5.22.0" },
-    { name = "holidays", specifier = ">=0.84" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "ipywidgets", specifier = ">=8.1.5" },
     { name = "langchain-anthropic", specifier = ">=0.3.10" },
@@ -1056,18 +1054,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f3/92/1d351ac6cef7c4ba8c85744d37ffbfac2d53d0a6c04d2cabeba614640a78/hf_xet-1.1.5-cp37-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:ab34c4c3104133c495785d5d8bba3b1efc99de52c02e759cf711a91fd39d3a14", size = 3171009, upload-time = "2025-06-20T21:48:33.987Z" },
     { url = "https://files.pythonhosted.org/packages/c9/65/4b2ddb0e3e983f2508528eb4501288ae2f84963586fbdfae596836d5e57a/hf_xet-1.1.5-cp37-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:83088ecea236d5113de478acb2339f92c95b4fb0462acaa30621fac02f5a534a", size = 3279245, upload-time = "2025-06-20T21:48:36.051Z" },
     { url = "https://files.pythonhosted.org/packages/f0/55/ef77a85ee443ae05a9e9cba1c9f0dd9241eb42da2aeba1dc50f51154c81a/hf_xet-1.1.5-cp37-abi3-win_amd64.whl", hash = "sha256:73e167d9807d166596b4b2f0b585c6d5bd84a26dea32843665a8b58f6edba245", size = 2738931, upload-time = "2025-06-20T21:48:39.482Z" },
-]
-
-[[package]]
-name = "holidays"
-version = "0.84"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "python-dateutil" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/2b/91/7301d71a49cfbb499c704615565199180676131da1a56896365bfff6df52/holidays-0.84.tar.gz", hash = "sha256:d604490717c2315e0800269d03c86bf8275e132e4bd140f19d62eb6ccddb5ddc", size = 797583, upload-time = "2025-11-03T20:34:15.139Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/a3/26f03449945a1cae7fbd3de10b88d9c139e20753537e4d527304b1e51dea/holidays-0.84-py3-none-any.whl", hash = "sha256:bca376e3becb36ea8e370d08268520934d8a9bd897ae5007ba51b3d7b4e34988", size = 1310662, upload-time = "2025-11-03T20:34:13.284Z" },
 ]
 
 [[package]]
