@@ -5,6 +5,5 @@ pypdf
 openai
 openai-agents
 dotenv
-agents
 pydantic
 sendgrid
