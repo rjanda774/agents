@@ -15,15 +15,15 @@ The **CrewAI** system automates the design, coding, testing, and integration of 
 All modules and their test files are stored under account_directory/.  
 After running all tasks, the generated structure looks like:
 
-account_directory/
-├── module_a.py
-├── test_module_a.py
-├── module_b.py
-├── test_module_b.py
-├── ...
-├── accounts.py          # main frontend API
-├── test_accounts.py     # frontend headless test
-└── README.md
+account_directory/  
+├── module_a.py  
+├── test_module_a.py  
+├── module_b.py  
+├── test_module_b.py  
+├── ...  
+├── accounts.py          # main frontend API  
+├── test_accounts.py     # frontend headless test  
+└── README.md  
 
 
 The main API can be launched with:
