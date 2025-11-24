@@ -6,11 +6,11 @@ AI-powered USD SOFR swap trading monitoring system using CrewAI multi-agent fram
 
 ## 🚀 Quick Start
 
-1. **Prerequisites:** PostgreSQL database, OpenAI API key, Serper API key
+1. **Prerequisites:** OpenAI API key, Serper API key
 2. **Setup:**
    ```bash
    cd .\3_crew\community_contributions\1_swap_trading_prism\
-   # Add the following keys in .env: DATABASE_URL=, OPENAI_API_KEY=, SERPER_API_KEY=
+   # Add the following keys in .env: OPENAI_API_KEY=, SERPER_API_KEY=
    crewai run
    ```
 
