@@ -131,7 +131,7 @@ def main():
     draw_dog()
 
     # 3) Save PNG and cleanup
-    GLOBAL_CANVAS.save_and_cleanup("output.png")
+    GLOBAL_CANVAS.save_and_cleanup("test_output.png")
 
 
 if __name__ == "__main__":
