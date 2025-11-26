@@ -17,3 +17,5 @@ This project uses uv as the environment manager.
 
 Run using:
 uv run python main.py
+
+Output is saved as agent_output.png and then evaluated.
