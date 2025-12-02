@@ -123,10 +123,9 @@ gcloud builds submit --tag gcr.io/PROJECT_ID/chatbot-api
 
 **Step 2: Deploy to Cloud Run**
 ```bash
-gcloud run deploy chatbot-api \
-  --image gcr.io/PROJECT_ID/chatbot-api \
-  --platform managed \
-  --allow-unauthenticated
+gcloud run deploy chatbot-backend --image gcr.io/your_google_cloud_project_id/
+chatbot-backend --platform managed --region asia-south1 --allow-unauthenticated --port 8080
+--set-env-vars=GOOGLE_API_KEY=" type_your_api_key_here ",NTFY_TOPIC=" your_ntfy_topic"
 ```
 
 Cloud Run will provide a public API endpoint:
@@ -147,6 +146,10 @@ with your real Cloud Run URL (e.g., `https://chatbot-api-xxxxx.a.run.app`):
 ```js
 fetch("https://chatbot-api-xxxxx.a.run.app", { ... });
 ```
+
+📄 **Full HTML & CSS code:**  
+[Click here](https://docs.google.com/document/d/1vTMalC9MHRaubbGgaU3mDGeWhz0Zha_2hAwq9tso9gw/edit?usp=sharing)
+
 
 ### Widget Features
 
