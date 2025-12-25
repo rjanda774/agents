@@ -186,3 +186,18 @@ memory.db
 # Ignore Accounts database in capstone project
 6_mcp/accounts.db
 6_mcp/memory/*.db
+# secrets / env
+.env
+.venv/
+__pycache__/
+
+# databases / vector stores / binaries
+*.db
+*.sqlite
+*.sqlite3
+*.bin
+
+# common memory/vectorstore dirs
+**/memory/
+**/career_db/
+**/chroma*
