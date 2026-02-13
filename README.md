@@ -1,61 +1,233 @@
-## Master AI Agentic Engineering -  build autonomous AI Agents
+# Stock Picker AI Agent
 
-### 6 week journey to code and deploy AI Agents with OpenAI Agents SDK, CrewAI, LangGraph, AutoGen and MCP
+An intelligent multi-agent system powered by CrewAI that analyzes trending companies in the news and recommends the best investment opportunities based on comprehensive research.
 
-![Autonomous Agent](assets/autonomy.png)
+## Overview
 
-_If you're looking at this in Cursor, please right click on the filename in the Explorer on the left, and select "Open preview", to view the formatted version._
+This project uses a hierarchical team of AI agents to:
+1. **Find trending companies** - Scans latest financial news to identify companies generating buzz in a specific sector
+2. **Research companies** - Conducts deep analysis on each trending company's market position, outlook, and investment potential
+3. **Pick the best investment** - Synthesizes research findings to recommend the top investment opportunity
 
-I couldn't be more excited to welcome you! This is the start of your 6 week adventure into the powerful, astonishing and often surreal world of Agentic AI.
+## Architecture
 
-### Before you begin
+The system uses CrewAI's hierarchical process with the following agents:
 
-I'm here to help you be most successful! Please do reach out if I can help, either in the platform or by emailing me direct (ed@edwarddonner.com). It's always great to connect with people on LinkedIn to build up the community - you'll find me here:  
-https://www.linkedin.com/in/eddonner/  
-And this is new to me, but I'm also trying out X/Twitter at [@edwarddonner](https://x.com/edwarddonner) - if you're on X, please show me how it's done 😂  
+### Agents
 
-### The not-so-dreaded setup instructions
+1. **Financial News Analyst** - Finds 2-3 trending companies in the news
+2. **Senior Financial Researcher** - Provides comprehensive analysis of each company
+3. **Stock Picker** - Selects the best company for investment based on research
+4. **Manager** - Orchestrates the entire workflow and delegates tasks
 
-Perhaps famous last words: but I really, truly hope that I've put together an environment that will be not too horrific to set up!
+### Features
 
-- Windows people, your instructions are [here](setup/SETUP-PC.md)
-- Mac people, yours are [here](setup/SETUP-mac.md)
-- Linux people, yours are [here](setup/SETUP-linux.md)
+- **Multi-Agent Collaboration**: Agents work together hierarchically with a manager coordinating tasks
+- **Memory System**: 
+  - Long-term memory (SQLite) for persistent learning across sessions
+  - Short-term memory (RAG) for current context
+  - Entity memory for tracking key information
+- **Web Search Integration**: Uses SerperDev tool for real-time market research
+- **Push Notifications**: Optional Pushover integration to notify you of investment decisions
+- **Structured Outputs**: Uses Pydantic models for reliable, typed responses
+- **Output Persistence**: Saves reports in JSON and Markdown formats
 
-Any problems, please do contact me.
+## Installation
 
-### Important notes for CrewAI week (Week 3)
+### Prerequisites
 
-Windows PC users: you will need to have checked the "gotcha #4" at the top of the [SETUP-PC](setup/SETUP-PC.md) instructions -- installing Microsoft Build Tools.  
-If you don't do this, then CrewAI will fail with an obscure error involving Chroma..
+- Python >=3.10 <3.13
+- [UV package manager](https://docs.astral.sh/uv/)
+- OpenAI API key
+- Serper API key (for web search)
+- (Optional) Pushover account for push notifications
 
+### Setup
 
-Then, you will need to run this command in a Cursor Terminal in the project root directory in order to run the Crew commands:  
-`uv tool install crewai`   
-And in case you've used Crew before, it might be worth doing this to make sure you have the latest:  
-`uv tool upgrade crewai`  
+1. **Clone this repository:**
+```bash
+git clone <your-repo-url>
+cd stock-picker-isolated
+```
 
-Then please keep in mind for Crew:
+2. **Install UV (if not already installed):**
+```bash
+pip install uv
+```
 
-1. There are two ways that you can work on the CrewAI project in week 3. Either review the code for each project while I build it, and then do `crewai run` to see it in action. Or if you prefer to be more hands-on, then create your own Crew project from scratch to mirror mine; for example, create `my_debate` to go alongside `debate`, and write the code alongside me. Either approach works!  
-2. Windows users: there's a new issue that was recently introduced by one of Crew's libraries. Until this is fixed, you might get a "unicode" error when you try to run `crewai create crew`.  If that happens, please try running this command in the Terminal first: `$env:PYTHONUTF8 = "1"`  
-3. Gemini users: in addition to a key in your `.env` file for `GOOGLE_API_KEY`, you will need an identical key for `GEMINI_API_KEY`
+3. **Install CrewAI CLI:**
+```bash
+uv tool install crewai
+```
 
-### Super useful resources
+4. **Install dependencies:**
+```bash
+crewai install
+```
 
-- The course [resources](https://edwarddonner.com/2025/04/21/the-complete-agentic-ai-engineering-course/) with videos
-- Many essential guides in the [guides](guides/01_intro.ipynb) section
-- The [troubleshooting](setup/troubleshooting.ipynb) notebook  
-- My overall [FAQ](https://edwarddonner.com/faq) page with common issues and questions
+5. **Set up environment variables:**
 
-### API costs - please read me!
+Create a `.env` file in the root directory:
 
-This course does involve making calls to OpenAI and other frontier models, requiring an API key and a small spend, which we set up in the SETUP instructions. If you'd prefer not to spend on API calls, there are cheaper alternatives like DeepSeek and free alternatives like using Ollama!
+```bash
+# Required
+OPENAI_API_KEY=your_openai_api_key_here
+SERPER_API_KEY=your_serper_api_key_here
 
-Details are [here](guides/09_ai_apis_and_ollama.ipynb).
+# Optional - for push notifications
+PUSHOVER_USER=your_pushover_user_key
+PUSHOVER_TOKEN=your_pushover_app_token
+```
 
-Be sure to monitor your API costs to ensure you are totally happy with any spend. For OpenAI, the dashboard is [here](https://platform.openai.com/usage).
+**Getting API Keys:**
+- OpenAI: https://platform.openai.com/api-keys
+- Serper: https://serper.dev/
+- Pushover: https://pushover.net/
 
-### ABOVE ALL ELSE -
+## Usage
 
-Be sure to have fun with the course! You could not have picked a better time to be learning about Agentic AI. I hope you enjoy every single minute! And if you get stuck at any point - [contact me](https://www.linkedin.com/in/eddonner/).# agents
+### Run the Stock Picker
+
+From the root directory:
+
+```bash
+crewai run
+```
+
+This will:
+1. Search for trending companies in the Technology sector (configurable)
+2. Research each company's market position and investment potential
+3. Select the best company for investment
+4. Generate detailed reports in the `output/` directory
+
+### Customization
+
+**Change the sector:**
+
+Edit `src/stock_picker/main.py` and modify the `inputs` dictionary:
+
+```python
+inputs = {
+    'sector': 'Healthcare',  # Change this to any sector
+    "current_date": str(datetime.now())
+}
+```
+
+**Modify agent behavior:**
+
+- Edit `src/stock_picker/config/agents.yaml` to change agent roles, goals, and backstories
+- Edit `src/stock_picker/config/tasks.yaml` to modify task descriptions and outputs
+
+**Change LLM models:**
+
+In `agents.yaml`, you can specify different models:
+
+```yaml
+financial_researcher:
+  llm: openai/gpt-4o  # Use GPT-4o for more thorough analysis
+```
+
+## Project Structure
+
+```
+stock-picker/
+├── src/stock_picker/
+│   ├── main.py                 # Entry point
+│   ├── crew.py                 # Agent and task definitions
+│   ├── config/
+│   │   ├── agents.yaml         # Agent configurations
+│   │   └── tasks.yaml          # Task definitions
+│   └── tools/
+│       ├── __init__.py
+│       └── push_tool.py        # Push notification tool
+├── output/
+│   ├── trending_companies.json # List of trending companies
+│   ├── research_report.json    # Detailed research
+│   └── decision.md             # Final investment decision
+├── memory/                     # Agent memory storage
+├── knowledge/                  # User preferences and knowledge
+├── pyproject.toml             # Project dependencies
+└── README.md                  # This file
+```
+
+## Output Files
+
+The system generates three main outputs:
+
+1. **trending_companies.json** - List of companies trending in the news with their tickers and reasons
+2. **research_report.json** - Comprehensive analysis of each company including market position, outlook, and investment potential
+3. **decision.md** - Final investment recommendation with detailed rationale
+
+## Memory System
+
+The crew maintains three types of memory:
+
+- **Long-term Memory**: Persists across sessions to remember past analyses and avoid repeating companies
+- **Short-term Memory**: Maintains context during the current analysis
+- **Entity Memory**: Tracks important information about companies, markets, and trends
+
+Memory files are stored in the `memory/` directory and persist between runs.
+
+## Advanced Usage
+
+### Running Multiple Sectors
+
+You can create a loop to analyze multiple sectors:
+
+```python
+sectors = ['Technology', 'Healthcare', 'Finance', 'Energy']
+for sector in sectors:
+    inputs = {'sector': sector, "current_date": str(datetime.now())}
+    result = StockPicker().crew().kickoff(inputs=inputs)
+    # Process results...
+```
+
+### Integrating with Trading Systems
+
+The output JSON files can be easily integrated with trading APIs or portfolio management systems.
+
+## Troubleshooting
+
+**"ModuleNotFoundError: No module named 'crewai'"**
+- Run: `crewai install`
+
+**"API key not found"**
+- Ensure your `.env` file is in the root directory with valid API keys
+
+**"SerperDevTool error"**
+- Verify your SERPER_API_KEY is correct
+- Check your Serper account has available credits
+
+**Memory database locked**
+- Delete files in `memory/` directory and restart
+
+## Contributing
+
+This project is part of a larger AI agents learning repository. Feel free to:
+- Submit issues for bugs or feature requests
+- Create pull requests with improvements
+- Share your investment findings (for educational purposes only!)
+
+## Disclaimer
+
+⚠️ **Important**: This tool is for educational and research purposes only. It should NOT be used as the sole basis for investment decisions. Always:
+- Conduct your own research
+- Consult with financial advisors
+- Consider your risk tolerance
+- Understand that past performance doesn't guarantee future results
+
+The creators of this tool are not responsible for any financial losses incurred from using this software.
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Credits
+
+Built with:
+- [CrewAI](https://crewai.com) - Multi-agent orchestration framework
+- [OpenAI](https://openai.com) - Language models
+- [Serper](https://serper.dev) - Web search API
+- [Pushover](https://pushover.net) - Push notifications
+
+Part of the "Master AI Agentic Engineering" course by Edward Donner.
