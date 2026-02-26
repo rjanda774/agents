@@ -25,6 +25,45 @@ max-height: 150px;
 min-height: 200px;
 max-height: 200px;
 }
+/* ID-based selectors (highest specificity) for transactions tables */
+#transactions-warren table tbody tr,
+#transactions-george table tbody tr,
+#transactions-ray table tbody tr,
+#transactions-cathie table tbody tr {
+    height: 11px !important;
+    line-height: 11px !important;
+}
+#transactions-warren table td,
+#transactions-george table td,
+#transactions-ray table td,
+#transactions-cathie table td {
+    padding: 0px 2px !important;
+    font-size: 9px !important;
+    height: 11px !important;
+    line-height: 11px !important;
+}
+#transactions-warren table th,
+#transactions-george table th,
+#transactions-ray table th,
+#transactions-cathie table th {
+    padding: 0px 2px !important;
+    font-size: 9px !important;
+    height: 11px !important;
+}
+/* Holdings table */
+.dataframe-fix-small table tbody tr {
+    height: 14px !important;
+    line-height: 14px !important;
+}
+.dataframe-fix-small table td {
+    padding: 1px 3px !important;
+    font-size: 10px !important;
+    height: 14px !important;
+}
+.dataframe-fix-small table th {
+    padding: 1px 3px !important;
+    font-size: 10px !important;
+}
 footer{display:none !important}
 """
 

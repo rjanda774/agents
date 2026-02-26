@@ -1,12 +1,13 @@
 from contextlib import AsyncExitStack
 from accounts_client import read_accounts_resource, read_strategy_resource
 from tracers import make_trace_id
-from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
-from openai import AsyncOpenAI
+from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace  # type: ignore
+from openai import AsyncOpenAI  # type: ignore
 from dotenv import load_dotenv
 import os
 import json
-from agents.mcp import MCPServerStdio
+from datetime import datetime
+from agents.mcp import MCPServerStdio  # type: ignore
 from templates import (
     researcher_instructions,
     trader_instructions,
@@ -15,6 +16,7 @@ from templates import (
     research_tool,
 )
 from mcp_params import trader_mcp_server_params, researcher_mcp_server_params
+from accounts import Account
 
 load_dotenv(override=True)
 
@@ -102,11 +104,23 @@ class Trader:
 
     async def run_with_mcp_servers(self):
         async with AsyncExitStack() as stack:
+            # Cathie gets special options spreads server, others get standard config
+            from mcp_params import cathie_mcp_server_params
+            mcp_params = cathie_mcp_server_params() if self.name == "Cathie" else trader_mcp_server_params
+            
+            # Debug logging
+            if self.name == "Cathie":
+                print(f"\n{'='*60}")
+                print(f"CATHIE LOADING MCP SERVERS:")
+                for param in mcp_params:
+                    print(f"  - {param['command']} {' '.join(param['args'])}")
+                print(f"{'='*60}\n")
+            
             trader_mcp_servers = [
                 await stack.enter_async_context(
                     MCPServerStdio(params, client_session_timeout_seconds=120)
                 )
-                for params in trader_mcp_server_params
+                for params in mcp_params
             ]
             async with AsyncExitStack() as stack:
                 researcher_mcp_servers = [
@@ -129,3 +143,11 @@ class Trader:
         except Exception as e:
             print(f"Error running trader {self.name}: {e}")
         self.do_trade = not self.do_trade
+        
+        # Update portfolio value time series after each run
+        account = Account.get(self.name)
+        portfolio_value = account.calculate_portfolio_value()
+        account.portfolio_value_time_series.append(
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), portfolio_value)
+        )
+        account.save()

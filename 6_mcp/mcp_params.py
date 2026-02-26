@@ -27,6 +27,16 @@ trader_mcp_server_params = [
     market_mcp,
 ]
 
+# Cathie gets special access to REAL options trading server (yfinance + OptionLab)
+# Completely separate from stock trading used by Warren, George, Ray
+def cathie_mcp_server_params():
+    return [
+        {"command": "uv", "args": ["run", "accounts_server.py"]},
+        {"command": "uv", "args": ["run", "push_server.py"]},
+        {"command": "python", "args": ["options_trading_wrapper.py"]},  # NEW: Real options trading
+        market_mcp,  # Stock prices for reference only
+    ]
+
 # The full set of MCP servers for the researcher: Fetch, Brave Search and Memory
 
 

@@ -1,0 +1,10 @@
+============================================================
+OPTIONS SPREADS SERVER WRAPPER STARTING
+============================================================
+Python: C:\Python314\python.EXE
+Path: ['C:\\udemy\\agents\\rjanda774\\agents\\6_mcp', 'C:\\Python314\\python314.zip', 'C:\\Python314\\DLLs', 'C:\\Python314\\Lib', 'C:\\Python314', 'C:\\Users\\janda\\AppData\\Roaming\\Python\\Python314\\site-packages', 'C:\\Users\\janda\\AppData\\Roaming\\Python\\Python314\\site-packages\\win32', 'C:\\Users\\janda\\AppData\\Roaming\\Python\\Python314\\site-packages\\win32\\lib', 'C:\\Users\\janda\\AppData\\Roaming\\Python\\Python314\\site-packages\\Pythonwin', 'C:\\Python314\\Lib\\site-packages']
+CWD: C:\udemy\agents\rjanda774\agents\6_mcp
+============================================================
+Importing options_spreads_server...
+SUCCESS: Import successful
+Starting MCP server...

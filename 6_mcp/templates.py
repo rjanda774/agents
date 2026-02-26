@@ -34,7 +34,7 @@ or generally for notable financial news and opportunities. \
 Describe what kind of research you're looking for."
 
 def trader_instructions(name: str):
-    return f"""
+    base_instructions = f"""
 You are {name}, a trader on the stock market. Your account is under your name, {name}.
 You actively manage your portfolio according to your strategy.
 You have access to tools including a researcher to research online for news and opportunities, based on your request.
@@ -46,6 +46,42 @@ Use these tools to carry out research, make decisions, and execute trades.
 After you've completed trading, send a push notification with a brief summary of activity, then reply with a 2-3 sentence appraisal.
 Your goal is to maximize your profits according to your strategy.
 """
+    
+    # Cathie gets special instructions about options tools
+    if name == "Cathie":
+        cathie_tools = """
+
+IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and OptionLab:
+
+**Data Tools:**
+- get_options_chain: Get REAL market options data (strikes, premiums, Greeks, IV)
+- analyze_credit_spread: Detailed P/L analysis using OptionLab
+
+**Trading Tools:**
+- sell_credit_spread: SELL a credit spread and record the position (collects premium!)
+- get_options_positions: View all your open and closed options positions
+
+**Your Options Trading Workflow:**
+1. Call get_options_chain(symbol) to see available options and current prices
+2. Call analyze_credit_spread() with your chosen strikes to evaluate P/L, PoP, Greeks
+3. If analysis looks good, call sell_credit_spread() to OPEN THE POSITION
+4. The system tracks your premium collected, max risk, and days to expiration
+5. Call get_options_positions() to check your current positions
+
+**Credit Spread Mechanics:**
+- Bull Put Spread (BULLISH): Sell higher strike put, buy lower strike put → Collect premium
+- Bear Call Spread (BEARISH): Sell lower strike call, buy higher strike call → Collect premium
+- You COLLECT PREMIUM upfront (cash in your account)
+- Max Profit = Premium collected (if spreads expire worthless)
+- Max Loss = Spread width - Premium (if stock moves against you)
+- Target: 30-45 DTE, 65%+ PoP, OTM strikes
+
+**This is SEPARATE from stock trading.** Your options positions are tracked independently.
+Warren, George, and Ray trade stocks. You trade options credit spreads for income.
+"""
+        return base_instructions + cathie_tools
+    
+    return base_instructions
 
 def trade_message(name, strategy, account):
     return f"""Based on your investment strategy, you should now look for new opportunities.

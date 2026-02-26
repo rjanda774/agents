@@ -1,8 +1,8 @@
-import gradio as gr
+import gradio as gr  # type: ignore
 from util import css, js, Color
-import pandas as pd
+import pandas as pd  # type: ignore
 from trading_floor import names, lastnames, short_model_names
-import plotly.express as px
+import plotly.express as px  # type: ignore
 from accounts import Account
 from database import read_log
 
@@ -39,10 +39,14 @@ class Trader:
 
     def get_portfolio_value_chart(self):
         df = self.get_portfolio_value_df()
-        fig = px.line(df, x="datetime", y="value")
+        if df.empty:
+            # Return empty chart if no data
+            fig = px.line()
+        else:
+            fig = px.line(df, x="datetime", y="value")
         margin = dict(l=40, r=20, t=20, b=40)
         fig.update_layout(
-            height=300,
+            height=200,
             margin=margin,
             xaxis_title=None,
             yaxis_title=None,
@@ -50,7 +54,12 @@ class Trader:
             plot_bgcolor="#dde",
         )
         fig.update_xaxes(tickformat="%m/%d", tickangle=45, tickfont=dict(size=8))
-        fig.update_yaxes(tickfont=dict(size=8), tickformat=",.0f")
+        # Force Y-axis to auto-scale based on data range
+        fig.update_yaxes(
+            tickfont=dict(size=8), 
+            tickformat=",.0f",
+            autorange=True  # Force auto-scaling
+        )
         return fig
 
     def get_holdings_df(self) -> pd.DataFrame:
@@ -80,6 +89,22 @@ class Trader:
         emoji = "⬆" if pnl >= 0 else "⬇"
         return f"<div style='text-align: center;background-color:{color};'><span style='font-size:32px'>${portfolio_value:,.0f}</span><span style='font-size:24px'>&nbsp;&nbsp;&nbsp;{emoji}&nbsp;${pnl:,.0f}</span></div>"
 
+    def get_cash_breakdown(self) -> str:
+        """Display cash available vs cash in holdings"""
+        cash_available = self.account.balance
+        
+        # Calculate value of holdings
+        holdings_value = 0.0
+        for symbol, quantity in self.account.holdings.items():
+            from market import get_share_price
+            price = get_share_price(symbol)
+            holdings_value += price * quantity
+        
+        return f"""<div style='text-align: center; font-size: 14px; padding: 5px;'>
+            <div style='color: #2ecc71; font-weight: bold;'>💵 Cash Available: ${cash_available:,.2f}</div>
+            <div style='color: #3498db; font-weight: bold;'>📊 Cash in Holdings: ${holdings_value:,.2f}</div>
+        </div>"""
+
     def get_logs(self, previous=None) -> str:
         logs = read_log(self.name, last_n=13)
         response = ""
@@ -87,7 +112,7 @@ class Trader:
             timestamp, type, message = log
             color = mapper.get(type, Color.WHITE).value
             response += f"<span style='color:{color}'>{timestamp} : [{type}] {message}</span><br/>"
-        response = f"<div style='height:250px; overflow-y:auto;'>{response}</div>"
+        response = f"<div style='height:150px; overflow-y:auto;'>{response}</div>"
         if response != previous:
             return response
         return gr.update()
@@ -97,12 +122,13 @@ class TraderView:
     def __init__(self, trader: Trader):
         self.trader = trader
         self.portfolio_value = None
+        self.cash_breakdown = None
         self.chart = None
         self.holdings_table = None
         self.transactions_table = None
 
     def make_ui(self):
-        with gr.Column():
+        with gr.Column(scale=1, min_width=300):
             gr.HTML(self.trader.get_title())
             with gr.Row():
                 self.portfolio_value = gr.HTML(self.trader.get_portfolio_value)
@@ -110,6 +136,8 @@ class TraderView:
                 self.chart = gr.Plot(
                     self.trader.get_portfolio_value_chart, container=True, show_label=False
                 )
+            with gr.Row():
+                self.cash_breakdown = gr.HTML(self.trader.get_cash_breakdown)
             with gr.Row(variant="panel"):
                 self.log = gr.HTML(self.trader.get_logs)
             with gr.Row():
@@ -117,9 +145,9 @@ class TraderView:
                     value=self.trader.get_holdings_df,
                     label="Holdings",
                     headers=["Symbol", "Quantity"],
-                    row_count=(5, "dynamic"),
+                    row_count=(3, "dynamic"),
                     col_count=2,
-                    max_height=300,
+                    max_height=150,
                     elem_classes=["dataframe-fix-small"],
                 )
             with gr.Row():
@@ -127,10 +155,11 @@ class TraderView:
                     value=self.trader.get_transactions_df,
                     label="Recent Transactions",
                     headers=["Timestamp", "Symbol", "Quantity", "Price", "Rationale"],
-                    row_count=(5, "dynamic"),
+                    row_count=(3, "dynamic"),
                     col_count=5,
-                    max_height=300,
+                    max_height=150,
                     elem_classes=["dataframe-fix"],
+                    elem_id=f"transactions-{self.trader.name.lower()}",
                 )
 
         timer = gr.Timer(value=120)
@@ -139,6 +168,7 @@ class TraderView:
             inputs=[],
             outputs=[
                 self.portfolio_value,
+                self.cash_breakdown,
                 self.chart,
                 self.holdings_table,
                 self.transactions_table,
@@ -159,6 +189,7 @@ class TraderView:
         self.trader.reload()
         return (
             self.trader.get_portfolio_value(),
+            self.trader.get_cash_breakdown(),
             self.trader.get_portfolio_value_chart(),
             self.trader.get_holdings_df(),
             self.trader.get_transactions_df(),

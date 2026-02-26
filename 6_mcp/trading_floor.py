@@ -16,7 +16,7 @@ RUN_EVEN_WHEN_MARKET_IS_CLOSED = (
 USE_MANY_MODELS = os.getenv("USE_MANY_MODELS", "false").strip().lower() == "true"
 
 names = ["Warren", "George", "Ray", "Cathie"]
-lastnames = ["Patience", "Bold", "Systematic", "Crypto"]
+lastnames = ["Patience", "Bold", "Systematic", "Options"]
 
 if USE_MANY_MODELS:
     model_names = [
@@ -51,4 +51,6 @@ async def run_every_n_minutes():
 
 if __name__ == "__main__":
     print(f"Starting scheduler to run every {RUN_EVERY_N_MINUTES} minutes")
+    print(f"RUN_EVEN_WHEN_MARKET_IS_CLOSED = {RUN_EVEN_WHEN_MARKET_IS_CLOSED}")
+    print(f"Market currently open: {is_market_open()}")
     asyncio.run(run_every_n_minutes())
