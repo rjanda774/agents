@@ -3,8 +3,9 @@ from openai import OpenAI
 import json
 import os
 import requests
-from pypdf import PdfReader
+#from pypdf import PdfReader
 import gradio as gr
+from pathlib import Path
 
 #load_dotenv(override=True)
 load_dotenv()
@@ -67,12 +68,13 @@ class Me:
         self.client = OpenAI()
         self.name = "Regina Janda"
 
-        reader = PdfReader("me/ProfileLinkedin.pdf")
-        self.linkedin = ""
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                self.linkedin += text
+        
+
+        BASE_DIR = Path(__file__).resolve().parent
+        linkedin_path = BASE_DIR / "me" / "ProfileLinkedin.txt"
+
+        self.linkedin = linkedin_path.read_text(encoding="utf-8")
+
 
         with open("me/summaryRJ.txt", "r", encoding="utf-8") as f:
             self.summary = f.read()

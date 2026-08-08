@@ -1,4 +1,4 @@
- app.py (HF entry point)
+#app.py (HF entry point)
 
 from foundations.app import Me
 import gradio as gr
