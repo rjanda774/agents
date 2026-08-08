@@ -50,19 +50,42 @@ max-height: 200px;
     font-size: 9px !important;
     height: 11px !important;
 }
-/* Holdings table */
-.dataframe-fix-small table tbody tr {
-    height: 14px !important;
-    line-height: 14px !important;
+/* Options positions table - compact all columns, small font */
+#options-cathie table tbody tr,
+#options-cathie table thead tr {
+    height: 11px !important;
+    line-height: 11px !important;
 }
-.dataframe-fix-small table td {
-    padding: 1px 3px !important;
-    font-size: 10px !important;
-    height: 14px !important;
+#options-cathie table td,
+#options-cathie table th {
+    font-size: 9px !important;
+    padding: 0px 2px !important;
+    height: 11px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    max-width: 52px !important;
 }
-.dataframe-fix-small table th {
-    padding: 1px 3px !important;
-    font-size: 10px !important;
+/* Expiry col (5) - same width as Opened/Closed date cols */
+#options-cathie table th:nth-child(5),
+#options-cathie table td:nth-child(5) {
+    max-width: 52px !important;
+    min-width: 52px !important;
+}
+/* Closed col (8) - same width as Opened */
+#options-cathie table th:nth-child(8),
+#options-cathie table td:nth-child(8) {
+    max-width: 52px !important;
+    min-width: 52px !important;
+}
+/* Holdings table - stock traders */
+.dataframe-fix-small table tbody tr,
+.dataframe-fix-small table tbody tr td,
+.dataframe-fix-small table thead tr th {
+    height: 11px !important;
+    line-height: 11px !important;
+    font-size: 9px !important;
+    padding: 0px 2px !important;
 }
 footer{display:none !important}
 """

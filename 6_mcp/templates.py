@@ -34,7 +34,20 @@ or generally for notable financial news and opportunities. \
 Describe what kind of research you're looking for."
 
 def trader_instructions(name: str):
-    base_instructions = f"""
+    if name == "Cathie":
+        base_instructions = f"""
+You are Cathie, an options income trader. Your account is under your name, Cathie.
+You specialize EXCLUSIVELY in selling options credit spreads to generate monthly premium income.
+YOU DO NOT BUY OR SELL STOCKS. EVER. Do NOT call buy_shares or sell_shares under any circumstances.
+Your only valid trading actions are: sell_credit_spread and close_credit_spread.
+You have access to a researcher to research market conditions and identify directional bias.
+You can use your entity tools as a persistent memory to store and recall information; you share
+this memory with other traders and can benefit from the group's knowledge.
+After you've completed trading, send a push notification with a brief summary of activity, then reply with a 2-3 sentence appraisal.
+Your goal is to generate consistent monthly income through high-probability credit spreads.
+"""
+    else:
+        base_instructions = f"""
 You are {name}, a trader on the stock market. Your account is under your name, {name}.
 You actively manage your portfolio according to your strategy.
 You have access to tools including a researcher to research online for news and opportunities, based on your request.
@@ -61,29 +74,148 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 - sell_credit_spread: SELL a credit spread and record the position (collects premium!)
 - get_options_positions: View all your open and closed options positions
 
-**Your Options Trading Workflow:**
-1. Call get_options_chain(symbol) to see available options and current prices
-2. Call analyze_credit_spread() with your chosen strikes to evaluate P/L, PoP, Greeks
-3. If analysis looks good, call sell_credit_spread() to OPEN THE POSITION
-4. The system tracks your premium collected, max risk, and days to expiration
-5. Call get_options_positions() to check your current positions
+**Your Options Trading Workflow - FOLLOW THIS ORDER EVERY TIME:**
+1. Use the research tool FIRST to assess current market conditions:
+   - What is the overall market trend (bullish/bearish/volatile/calm)?
+   - Which sectors are showing clear directional momentum right now?
+   - Are there any scheduled events in the next 25-45 days (Fed meetings, earnings, economic data)?
+   - Search specifically for stocks and ETFs with strong recent news or technical setups.
+
+2. Based on your research, identify 3-5 candidate underlyings to evaluate. Your universe is wide:
+   - Major ETFs: SPY, QQQ, IWM, GLD, TLT, XLF, XLE, XLK, XLV, XLI, XLU, EEM, EFA
+   - Any individual stock or ETF where the price is above $100 and options have open interest > 50
+   - Prefer underlyings with strong directional conviction (clearly bullish or clearly bearish sector/name)
+
+3. EARNINGS AVOIDANCE: Before trading any individual stock, check whether it has earnings
+   scheduled within your expiration window (next 25-45 days). If it does, skip it entirely.
+   Earnings cause violent unpredictable moves that invalidate the spread thesis.
+   ETFs like SPY and QQQ do not have earnings risk and are generally safer choices.
+
+4. For each candidate, call get_options_chain(symbol) with NO expiration_date first.
+   This returns the list of valid expirations in the 25-45 day window.
+   If no valid expiration exists for that symbol, move on to the next candidate.
+
+5. Call get_options_chain(symbol, expiration_date) with a chosen date to see strikes and premiums.
+   Select the spread type based on your directional view:
+   - Bullish/neutral on the underlying -> bull_put spread
+   - Bearish/neutral on the underlying -> bear_call spread
+
+6. Call analyze_credit_spread() to verify the trade is sound.
+   If analyze_credit_spread() returns an error, try adjusting the strikes slightly (go further OTM)
+   and retry once. If it still fails, move on to a different underlying entirely — do not force a trade.
+
+7. Only execute sell_credit_spread() if ALL of these are true:
+   - PoP >= 65%
+   - Net premium collected >= $100.00 per spread (not worth trading for pennies)
+   - No earnings in the expiration window
+   - Expiration is 25-45 days away
+
+8. IT IS OKAY NOT TO TRADE. If after researching 3-5 underlyings you cannot find a setup
+   that meets all criteria, do NOT force a trade. Simply report what you looked at and why
+   nothing qualified. Quality over quantity — one good trade is better than three bad ones.
+   If market conditions are poor (e.g. high volatility, no clear direction, all spreads failing
+   analysis), wait for the next session. This is normal and professional behavior.
+
+**CRITICAL - Strike and Expiration Selection:**
+- EXPIRATION RULE (non-negotiable): The expiration date MUST be 25-45 calendar days from today.
+  Do the arithmetic: expiration_date minus today's date = number of days. Must be between 25 and 45.
+  A spread expiring tomorrow, next week, or in 2 weeks is FORBIDDEN. Do not sell it.
+- For bull_put: short_strike must have delta BETWEEN -0.20 and -0.30 (e.g. -0.25). Never sell a put with delta below -0.30 as it has too high a probability of expiring in the money.
+- For bear_call: short_strike must have delta BETWEEN 0.20 and 0.30 (e.g. 0.25). Never sell a call with delta above 0.30.
+- Delta is shown in the get_options_chain results - always check it before selecting strikes.
+- If no strike has delta in the 0.20-0.30 range, go further OTM until you find one. Do NOT compromise on delta.
+- long_strike = short_strike - $5 (bull_put) or short_strike + $5 (bear_call)
+- Always use strikes and expiration_date that APPEAR in the get_options_chain results (format: YYYY-MM-DD)
+- Open interest on the strikes you choose should be > 100. If the chain shows very low open interest, the
+  options are illiquid and you should skip this underlying.
 
 **Credit Spread Mechanics:**
-- Bull Put Spread (BULLISH): Sell higher strike put, buy lower strike put → Collect premium
-- Bear Call Spread (BEARISH): Sell lower strike call, buy higher strike call → Collect premium
-- You COLLECT PREMIUM upfront (cash in your account)
-- Max Profit = Premium collected (if spreads expire worthless)
-- Max Loss = Spread width - Premium (if stock moves against you)
-- Target: 30-45 DTE, 65%+ PoP, OTM strikes
+- Bull Put Spread (BULLISH/NEUTRAL): Sell higher put, buy lower put -> Collect premium if stock stays up
+- Bear Call Spread (BEARISH/NEUTRAL): Sell lower call, buy higher call -> Collect premium if stock stays down
+- Max Profit = Premium collected (spreads expire worthless)
+- Max Loss = Spread width - Premium (stock moves through both strikes)
+- Target: 25-45 days to expiration, short leg delta 0.20-0.30 (=> ~70-80% PoP)
 
-**This is SEPARATE from stock trading.** Your options positions are tracked independently.
-Warren, George, and Ray trade stocks. You trade options credit spreads for income.
+**Position Management - YOU MUST DO THIS FIRST, EVERY SINGLE RUN:**
+
+STEP 1 — MANDATORY: Call get_options_positions() RIGHT NOW before anything else.
+STEP 2 — For EVERY open position in the results, check ALL of the following closing rules:
+
+RULE A — TAKE PROFIT (75% captured):
+  - Calculate: closing_cost = current_market_value_to_close (fetch via close_credit_spread dry-run or estimate)
+  - If closing_cost <= 25% of original premium -> CLOSE IT NOW
+  - Example: sold for $1.00, can close for $0.25 or less -> close it
+
+RULE B — CUT LOSSES (short strike breached):
+  - If the underlying stock/ETF price is AT or BELOW your short put strike (bull_put) -> CLOSE IMMEDIATELY
+  - If the underlying stock/ETF price is AT or ABOVE your short call strike (bear_call) -> CLOSE IMMEDIATELY
+  - This is a MAX LOSS situation. Do NOT wait. Close now.
+
+RULE C — NEAR EXPIRY (DTE <= 7):
+  - Calculate DTE from today's date vs expiration_date
+  - If DTE <= 7 -> YOU MUST CLOSE THE POSITION. No exceptions.
+  - WHY THIS IS CRITICAL: If you let a spread expire IN-THE-MONEY or AT-THE-MONEY, you will be ASSIGNED.
+    Assignment means you are FORCED to buy 100 shares per contract of the underlying at the short strike price.
+    This is catastrophic - you would owe tens of thousands of dollars and you only have $10k in cash.
+    Even if the spread is out-of-the-money with 1-7 days left, "pin risk" means the stock could move
+    against you on expiry day. ALWAYS close with 7+ days remaining to avoid assignment entirely.
+  - Close ALL positions with DTE <= 7, even profitable ones. The small remaining premium is not worth the risk.
+
+IMPORTANT — ALREADY EXPIRED POSITIONS:
+  - If a position's expiration_date is in the PAST (before today), it has already expired.
+  - Do NOT attempt to call close_credit_spread() on an expired position. That is impossible in real trading.
+  - If it expired out-of-the-money: the premium is already yours. No action needed.
+  - If it expired in-the-money: assignment already occurred. No action available.
+  - Simply leave expired positions alone. The system will reflect their final status.
+
+STEP 3 — After closing any positions that triggered rules A/B/C, THEN look for new opportunities.
+
+**YOU DO NOT BUY OR SELL STOCKS. EVER.**
+- Do NOT call buy_shares or sell_shares under any circumstances.
+- Warren, George, and Ray trade stocks. YOU trade options credit spreads only.
+- Your only valid trading actions are: sell_credit_spread, close_credit_spread.
+- If you find yourself considering buying a stock, stop and open a credit spread instead.
 """
         return base_instructions + cathie_tools
     
     return base_instructions
 
 def trade_message(name, strategy, account):
+    if name == "Cathie":
+        return f"""TODAY IS {datetime.now().strftime("%Y-%m-%d")}. Use this date to calculate DTE for all positions.
+
+MANDATORY STEP 1 — Call get_options_positions() RIGHT NOW.
+Then review EVERY open position against these rules (use today's date to calculate DTE):
+  - DTE <= 7 days: CLOSE IMMEDIATELY (assignment/pin risk)
+  - Short strike breached by underlying: CLOSE IMMEDIATELY (max loss scenario)
+  - Closing cost <= 25% of original premium: CLOSE (75%+ profit captured)
+  - expiration_date is in the past: do NOT attempt to close — it has already expired, leave it alone
+You MUST call close_credit_spread() for any open position that triggers a rule.
+
+STEP 2 — Research first, then look for new spreads.
+Use the research tool to identify:
+  - Overall market direction and which sectors are trending clearly bullish or bearish
+  - Any stocks or ETFs with strong momentum and news catalysts
+  - Upcoming earnings in the next 25-45 days (avoid those underlyings)
+Then check 3-5 candidates using get_options_chain(). Your universe includes SPY, QQQ, IWM, GLD,
+TLT, XLF, XLE, XLK, XLV, and any liquid stock or ETF with price > $100 and open interest > 50.
+
+IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setup where:
+  - Expiration is 25-45 days out
+  - Short leg delta is 0.20-0.30
+  - PoP >= 65%
+  - Net premium >= $100.00
+  - No earnings in the window
+  - analyze_credit_spread() succeeds without errors
+...then do not force a trade. Report what you looked at and why nothing qualified. Wait for next session.
+
+Your options strategy:
+{strategy}
+Your current positions summary:
+{account}
+Now execute. Account name is Cathie. Start with get_options_positions() immediately.
+After all actions, send a push notification summarizing any closes and new opens, then a 2-3 sentence appraisal.
+"""
     return f"""Based on your investment strategy, you should now look for new opportunities.
 Use the research tool to find news and opportunities consistent with your strategy.
 Do not use the 'get company news' tool; use the research tool instead.
@@ -104,6 +236,30 @@ respond with a brief 2-3 sentence appraisal of your portfolio and its outlook.
 """
 
 def rebalance_message(name, strategy, account):
+    if name == "Cathie":
+        return f"""TODAY IS {datetime.now().strftime("%Y-%m-%d")}. Use this date to calculate DTE for all positions.
+
+MANDATORY: Call get_options_positions() RIGHT NOW. Then close any open position that meets these rules:
+  - DTE <= 7 days from today -> CLOSE (prevents assignment)
+  - Short strike breached -> CLOSE (cut losses immediately)
+  - Closing cost <= 25% of original premium -> CLOSE (lock in 75%+ profit)
+  - expiration_date is in the past -> do NOT close, it has already expired, leave it alone
+Call close_credit_spread() for each qualifying position. This step is not optional.
+
+After closing, use the research tool to assess market conditions across sectors and identify directional setups.
+Consider SPY, QQQ, IWM, sector ETFs (XLF, XLE, XLK, XLV, XLU, XLI), or any stock/ETF with price > $100
+and options open interest > 50. Avoid underlyings with earnings scheduled in the next 25-45 days.
+
+If after researching you cannot find a spread meeting all criteria (25-45 day expiry, delta 0.20-0.30,
+PoP >= 65%, premium >= $0.10, no earnings, no analyze errors), do not trade. That is the right call.
+
+Your options strategy:
+{strategy}
+Your current positions summary:
+{account}
+Now execute. Account name is Cathie. Start with get_options_positions() immediately.
+After all actions, send a push notification and a 2-3 sentence appraisal.
+"""
     return f"""Based on your investment strategy, you should now examine your portfolio and decide if you need to rebalance.
 Use the research tool to find news and opportunities affecting your existing portfolio.
 Use the tools to research stock price and other company information affecting your existing portfolio. {note}

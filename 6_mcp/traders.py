@@ -86,10 +86,62 @@ class Trader:
         return self.agent
 
     async def get_account_report(self) -> str:
+        if self.name == "Cathie":
+            return self._get_cathie_options_summary()
         account = await read_accounts_resource(self.name)
         account_json = json.loads(account)
         account_json.pop("portfolio_value_time_series", None)
+        account_json["transactions"] = account_json.get("transactions", [])[-10:]
         return json.dumps(account_json)
+
+    def _get_cathie_options_summary(self) -> str:
+        """Return a compact options account summary for Cathie (no stock account bloat)."""
+        import sqlite3
+        from datetime import date
+        try:
+            conn = sqlite3.connect("accounts.db")
+            cur = conn.cursor()
+            cur.execute("SELECT account FROM accounts WHERE name = ?", ("cathie_options",))
+            row = cur.fetchone()
+            conn.close()
+            if not row or not row[0]:
+                return json.dumps({"cash": 10000, "open_positions": [], "closed_positions": [], "total_premium_collected": 0})
+            data = json.loads(row[0])
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+        today = date.today().isoformat()
+        open_pos = [p for p in data.get("open_positions", []) if p.get("expiration_date", "9999") >= today]
+        closed_pos = data.get("closed_positions", [])
+
+        # Compact open positions — strip bulky fields, keep what matters
+        compact_open = []
+        for p in open_pos:
+            compact_open.append({
+                "id": p.get("position_id", "")[:8],
+                "sym": p.get("symbol"),
+                "type": p.get("spread_type"),
+                "short": p.get("short_strike"),
+                "long": p.get("long_strike"),
+                "exp": p.get("expiration_date"),
+                "contracts": p.get("num_contracts"),
+                "premium": round(p.get("premium_collected", 0), 2),
+                "max_loss": round(p.get("max_loss", 0), 2),
+                "dte": (date.fromisoformat(p["expiration_date"]) - date.today()).days if p.get("expiration_date") else None,
+            })
+
+        # Closed: just totals, not the full list
+        total_realized = sum(p.get("realized_pnl", 0) or 0 for p in closed_pos)
+        total_collected = sum(p.get("premium_collected", 0) or 0 for p in data.get("open_positions", []) + closed_pos)
+
+        return json.dumps({
+            "cash": round(data.get("cash", 0), 2),
+            "total_premium_collected": round(total_collected, 2),
+            "total_realized_pnl": round(total_realized, 2),
+            "open_positions_count": len(compact_open),
+            "closed_positions_count": len(closed_pos),
+            "open_positions": compact_open,  # compact, no rationale blobs
+        })
 
     async def run_agent(self, trader_mcp_servers, researcher_mcp_servers):
         self.agent = await self.create_agent(trader_mcp_servers, researcher_mcp_servers)

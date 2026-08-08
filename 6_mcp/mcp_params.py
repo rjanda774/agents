@@ -33,7 +33,7 @@ def cathie_mcp_server_params():
     return [
         {"command": "uv", "args": ["run", "accounts_server.py"]},
         {"command": "uv", "args": ["run", "push_server.py"]},
-        {"command": "python", "args": ["options_trading_wrapper.py"]},  # NEW: Real options trading
+        {"command": "uv", "args": ["run", "options_trading_wrapper.py"]},  # Real options trading
         market_mcp,  # Stock prices for reference only
     ]
 
@@ -45,8 +45,7 @@ def researcher_mcp_server_params(name: str):
         {"command": "uvx", "args": ["mcp-server-fetch"]},
         {
             "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-            "env": brave_env,
+            "args": ["-y", "@brave/brave-search-mcp-server", "--brave-api-key", os.getenv("BRAVE_API_KEY", "")],
         },
         {
             "command": "npx",
