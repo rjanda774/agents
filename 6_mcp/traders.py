@@ -106,7 +106,7 @@ class Trader:
                 await stack.enter_async_context(
                     MCPServerStdio(params, client_session_timeout_seconds=120)
                 )
-                for params in trader_mcp_server_params
+                for params in trader_mcp_server_params(self.name)
             ]
             async with AsyncExitStack() as stack:
                 researcher_mcp_servers = [

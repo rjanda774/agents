@@ -21,11 +21,23 @@ else:
 
 # The full set of MCP servers for the trader: Accounts, Push Notification and the Market
 
-trader_mcp_server_params = [
-    {"command": "uv", "args": ["run", "accounts_server.py"]},
-    {"command": "uv", "args": ["run", "push_server.py"]},
-    market_mcp,
-]
+regime_mcp = {"command": "uv", "args": ["run", "regime_server.py"]}
+
+# Traders who additionally get the Markov regime-signal tool (see regime_signal.py).
+# Scoped narrowly for now -- it's a lagging trend-context signal, not proven useful
+# for every strategy style, and it needs real price history to say anything trustworthy.
+TRADERS_WITH_REGIME_TOOL = {"Cathie"}
+
+
+def trader_mcp_server_params(name: str):
+    params = [
+        {"command": "uv", "args": ["run", "accounts_server.py"]},
+        {"command": "uv", "args": ["run", "push_server.py"]},
+        market_mcp,
+    ]
+    if name in TRADERS_WITH_REGIME_TOOL:
+        params.append(regime_mcp)
+    return params
 
 # The full set of MCP servers for the researcher: Fetch, Brave Search and Memory
 
