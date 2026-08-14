@@ -27,18 +27,11 @@ There is no root README, no lint config, and no test suite for either core proje
 
 ## Architecture: the trading floor (`6_mcp/`)
 
-Four trader personas, each an independent LLM agent, run in parallel every cycle (`trading_floor.py` → `traders.py`):
-
-| Trader | Persona | Strategy focus |
-|---|---|---|
-| Warren | Warren Buffett | value investing, long holds |
-| George | George Soros | aggressive macro/contrarian |
-| Ray | Ray Dalio | systematic, risk-parity |
-| Cathie | Cathie Wood | aggressive crypto ETF bets |
+A single trader persona, Cathie (named for Cathie Wood; aggressive crypto ETF bets), runs each cycle (`trading_floor.py` → `traders.py`). The floor originally ran four personas (Warren/Buffett-value, George/Soros-macro, Ray/Dalio-risk-parity, plus Cathie); the other three were removed to simplify things, but `traders.py`/`trading_floor.py` still support an arbitrary list of traders via `names`/`lastnames`/`model_names` — add entries there and a matching strategy in `reset.py` to bring more traders back.
 
 Persona strategy text lives in `reset.py`; it's injected verbatim into the agent's prompt (`templates.py`) alongside live account state.
 
-- **Model selection**: all four traders use `gpt-4o-mini` unless `USE_MANY_MODELS=true`, which spreads them across GPT-4.1 Mini / DeepSeek / Gemini / Grok (`trading_floor.py`).
+- **Model selection**: Cathie uses `gpt-4o-mini` by default, overridable via `MODEL_NAME` (`trading_floor.py`).
 - **Two tool surfaces per trader** (`traders.py: Trader.create_agent`): its own "trader" MCP servers (accounts, push notifications, market data, and — Cathie only — the regime signal tool), plus a `Researcher` sub-agent exposed as a callable `Tool`, which has its own MCP servers (web fetch, Brave search, and a per-trader libsql memory store) for qualitative news research (`mcp_params.py`).
 - **Trade vs. rebalance**: `Trader.run()` alternates each cycle between `trade_message` (look for new opportunities) and `rebalance_message` (review existing positions), via the `self.do_trade` flip (`templates.py`).
 - **Persistence**: account state and logs live in a local SQLite DB (`database.py`, `accounts.py`).
@@ -59,4 +52,4 @@ Persona strategy text lives in `reset.py`; it's injected verbatim into the agent
 | `POLYGON_API_KEY`, `POLYGON_PLAN` | `market.py`, `regime_signal.py` | market data access/tier (`free`/`paid`/`realtime`) |
 | `BRAVE_API_KEY` | Researcher MCP server | web search |
 | `PUSHOVER_TOKEN`, `PUSHOVER_USER` | `push_server.py`, `foundations/app.py` | push notifications |
-| `RUN_EVERY_N_MINUTES`, `RUN_EVEN_WHEN_MARKET_IS_CLOSED`, `USE_MANY_MODELS` | `trading_floor.py` | scheduler behavior |
+| `RUN_EVERY_N_MINUTES`, `RUN_EVEN_WHEN_MARKET_IS_CLOSED`, `MODEL_NAME` | `trading_floor.py` | scheduler behavior / model override |
