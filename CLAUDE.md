@@ -7,11 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This repo currently holds two unrelated, independently-runnable projects, plus a couple of stray scripts:
 
 - **Root (`app.py`, `requirements.txt`, `foundations/`)** — the deployed Hugging Face Space: a Gradio chat app where an LLM answers questions in character as the repo owner, using their LinkedIn profile/summary as context (`foundations/app.py`, class `Me`). This is intentionally minimal — a previous restructuring ("HF deploy") stripped the rest of the original course repo (the numbered `1_foundations`...`5_autogen` lab folders and their `community_contributions`) down to just this, to keep the deployed Space small.
-- **`6_mcp/`** — a separate, self-contained project: an autonomous multi-agent paper-trading floor. Deliberately kept out of the HF-deploy trim (unlike the other numbered folders) because it's the active project. Everything below is about this directory.
+- **`6_mcp/`** — a separate, self-contained project: an autonomous agent-driven paper-trading floor (currently a single trader, Cathie). Deliberately kept out of the HF-deploy trim (unlike the other numbered folders) because it's the active project. Everything below is about this directory.
 - `LEANscriptOptionsbacktest.py`, `pdf_to_text.py` — standalone one-off utility scripts at root, unrelated to either app above.
-- `6_mcp/community_contributions/` — a large grab-bag of unrelated student/community submissions bundled with the original course material. Treat as reference/noise, not part of the core architecture, unless a task specifically points there.
 
-There is no root README, no lint config, and no test suite for either core project (test files that do exist live inside individual `6_mcp/community_contributions/*` submissions and are unrelated to the core code).
+`6_mcp/community_contributions/` (a grab-bag of unrelated student/community submissions bundled with the original course material) has been removed. There is no root README, no lint config, and no test suite.
 
 ## Running things
 
