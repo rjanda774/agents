@@ -1,4 +1,5 @@
 import os
+import sys
 from dotenv import load_dotenv
 from market import is_paid_polygon, is_realtime_polygon
 
@@ -6,6 +7,14 @@ load_dotenv(override=True)
 
 brave_env = {"BRAVE_API_KEY": os.getenv("BRAVE_API_KEY")}
 polygon_api_key = os.getenv("POLYGON_API_KEY")
+
+# Local MCP servers are launched with this exact interpreter (sys.executable), not `uv run`.
+# 6_mcp/ has no pyproject.toml/uv.lock (see CLAUDE.md), so `uv run <script>.py` treats every
+# invocation as an ad-hoc script and can print resolution/status text to stdout -- which
+# corrupts the MCP stdio JSON-RPC stream and shows up as an opaque "Connection closed" on
+# session.initialize(), even though the same script runs fine interactively. Using the
+# interpreter already running trading_floor.py sidesteps that entirely.
+PYTHON = sys.executable
 
 # The MCP server for the Trader to read Market Data
 
@@ -16,13 +25,13 @@ if is_paid_polygon or is_realtime_polygon:
         "env": {"POLYGON_API_KEY": polygon_api_key},
     }
 else:
-    market_mcp = {"command": "uv", "args": ["run", "market_server.py"]}
+    market_mcp = {"command": PYTHON, "args": ["market_server.py"]}
 
 
 # The full set of MCP servers for the trader: Accounts, Push Notification and the Market
 
-regime_mcp = {"command": "uv", "args": ["run", "regime_server.py"]}
-options_mcp = {"command": "uv", "args": ["run", "options_trading_wrapper.py"]}
+regime_mcp = {"command": PYTHON, "args": ["regime_server.py"]}
+options_mcp = {"command": PYTHON, "args": ["options_trading_wrapper.py"]}
 
 # Traders who additionally get the Markov regime-signal tool (see regime_signal.py).
 # Scoped narrowly for now -- it's a lagging trend-context signal, not proven useful
@@ -37,8 +46,8 @@ TRADERS_WITH_OPTIONS_TOOL = {"Cathie"}
 
 def trader_mcp_server_params(name: str):
     params = [
-        {"command": "uv", "args": ["run", "accounts_server.py"]},
-        {"command": "uv", "args": ["run", "push_server.py"]},
+        {"command": PYTHON, "args": ["accounts_server.py"]},
+        {"command": PYTHON, "args": ["push_server.py"]},
         market_mcp,
     ]
     if name in TRADERS_WITH_REGIME_TOOL:
