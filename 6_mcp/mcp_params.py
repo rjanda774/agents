@@ -1,11 +1,24 @@
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from dotenv import load_dotenv
 from market import is_paid_polygon, is_realtime_polygon
 
 load_dotenv(override=True)
 
 polygon_api_key = os.getenv("POLYGON_API_KEY")
+
+# uvx resolves mcp-server-fetch's dependencies in its own isolated environment, which can
+# land on a different `mcp` package version than the one actually installed here -- and
+# mcp-server-fetch has lagged behind at least one breaking rename in `mcp` (McpError ->
+# MCPError), causing an ImportError inside the child process that surfaces to us as an
+# opaque "Connection closed" on session.initialize(). Pin uvx to the same `mcp` version
+# already proven to work in this environment, read dynamically so this doesn't silently
+# break again after a future `pip install --upgrade mcp`.
+try:
+    _installed_mcp_version = _pkg_version("mcp")
+except PackageNotFoundError:
+    _installed_mcp_version = None
 
 # The mcp SDK does NOT pass the parent process's full environment to spawned stdio
 # servers by default -- only a small curated allowlist. On Windows that allowlist can
@@ -67,8 +80,11 @@ def trader_mcp_server_params(name: str):
 
 
 def researcher_mcp_server_params(name: str):
+    fetch_args = (
+        ["--with", f"mcp=={_installed_mcp_version}"] if _installed_mcp_version else []
+    ) + ["mcp-server-fetch"]
     return [
-        {"command": "uvx", "args": ["mcp-server-fetch"], "env": FULL_ENV},
+        {"command": "uvx", "args": fetch_args, "env": FULL_ENV},
         {
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-brave-search"],
