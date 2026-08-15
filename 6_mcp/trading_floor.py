@@ -16,7 +16,7 @@ RUN_EVEN_WHEN_MARKET_IS_CLOSED = (
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 
 names = ["Cathie"]
-lastnames = ["Crypto"]
+lastnames = ["Income"]
 model_names = [MODEL_NAME]
 short_model_names = [MODEL_NAME]
 
