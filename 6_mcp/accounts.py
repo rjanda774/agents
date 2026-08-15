@@ -157,6 +157,11 @@ class Account(BaseModel):
         self.save()
         pnl = self.calculate_profit_loss(portfolio_value)
         data = self.model_dump()
+        # Exclude time series from LLM context - only needed for the dashboard chart
+        data.pop("portfolio_value_time_series", None)
+        # Keep only recent transactions to avoid context overflow
+        if "transactions" in data:
+            data["transactions"] = data["transactions"][-20:]
         data["total_portfolio_value"] = portfolio_value
         data["total_profit_loss"] = pnl
         write_log(self.name, "account", f"Retrieved account details")

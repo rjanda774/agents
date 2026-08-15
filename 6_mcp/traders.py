@@ -1,11 +1,14 @@
 from contextlib import AsyncExitStack
 from accounts_client import read_accounts_resource, read_strategy_resource
+from accounts import Account
+from database import read_account
 from tracers import make_trace_id
 from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
 import json
+from datetime import date, datetime
 from agents.mcp import MCPServerStdio
 from templates import (
     researcher_instructions,
@@ -14,7 +17,7 @@ from templates import (
     rebalance_message,
     research_tool,
 )
-from mcp_params import trader_mcp_server_params, researcher_mcp_server_params
+from mcp_params import trader_mcp_server_params, researcher_mcp_server_params, TRADERS_WITH_OPTIONS_TOOL
 
 load_dotenv(override=True)
 
@@ -84,10 +87,57 @@ class Trader:
         return self.agent
 
     async def get_account_report(self) -> str:
+        if self.name in TRADERS_WITH_OPTIONS_TOOL:
+            return self._get_options_account_summary()
         account = await read_accounts_resource(self.name)
         account_json = json.loads(account)
         account_json.pop("portfolio_value_time_series", None)
         return json.dumps(account_json)
+
+    def _get_options_account_summary(self) -> str:
+        """Compact options-account summary (open positions, no closed-position/rationale bloat)."""
+        data = read_account(f"{self.name.lower()}_options")
+        if not data:
+            return json.dumps(
+                {"cash": 10_000, "open_positions": [], "closed_positions": [], "total_premium_collected": 0}
+            )
+
+        today = date.today().isoformat()
+        open_positions = [p for p in data.get("open_positions", []) if p.get("expiration_date", "9999") >= today]
+        closed_positions = data.get("closed_positions", [])
+
+        compact_open = [
+            {
+                "id": p.get("position_id", "")[:8],
+                "sym": p.get("symbol"),
+                "type": p.get("spread_type"),
+                "short": p.get("short_leg", {}).get("strike"),
+                "long": p.get("long_leg", {}).get("strike"),
+                "exp": p.get("expiration_date"),
+                "contracts": p.get("short_leg", {}).get("contracts"),
+                "premium": round(p.get("net_premium_collected", 0), 2),
+                "max_loss": round(p.get("max_loss", 0), 2),
+                "dte": (date.fromisoformat(p["expiration_date"]) - date.today()).days
+                if p.get("expiration_date")
+                else None,
+            }
+            for p in open_positions
+        ]
+        total_realized = sum(p.get("realized_pnl", 0) or 0 for p in closed_positions)
+        total_collected = sum(
+            p.get("net_premium_collected", 0) or 0 for p in data.get("open_positions", []) + closed_positions
+        )
+
+        return json.dumps(
+            {
+                "cash": round(data.get("cash", 10_000), 2),
+                "total_premium_collected": round(total_collected, 2),
+                "total_realized_pnl": round(total_realized, 2),
+                "open_positions_count": len(compact_open),
+                "closed_positions_count": len(closed_positions),
+                "open_positions": compact_open,
+            }
+        )
 
     async def run_agent(self, trader_mcp_servers, researcher_mcp_servers):
         self.agent = await self.create_agent(trader_mcp_servers, researcher_mcp_servers)
@@ -129,3 +179,12 @@ class Trader:
         except Exception as e:
             print(f"Error running trader {self.name}: {e}")
         self.do_trade = not self.do_trade
+
+        # Record a portfolio-value data point after every run, not just on trades,
+        # so the dashboard chart reflects price movement between trades too.
+        account = Account.get(self.name)
+        portfolio_value = account.calculate_portfolio_value()
+        account.portfolio_value_time_series.append(
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), portfolio_value)
+        )
+        account.save()

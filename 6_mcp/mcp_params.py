@@ -22,11 +22,17 @@ else:
 # The full set of MCP servers for the trader: Accounts, Push Notification and the Market
 
 regime_mcp = {"command": "uv", "args": ["run", "regime_server.py"]}
+options_mcp = {"command": "uv", "args": ["run", "options_trading_wrapper.py"]}
 
 # Traders who additionally get the Markov regime-signal tool (see regime_signal.py).
 # Scoped narrowly for now -- it's a lagging trend-context signal, not proven useful
 # for every strategy style, and it needs real price history to say anything trustworthy.
 TRADERS_WITH_REGIME_TOOL = {"Cathie"}
+
+# Traders who trade options credit spreads instead of stocks (see options_trading_server.py).
+# They keep accounts_server for get_balance/change_strategy, but their strategy/prompt
+# forbids buy_shares/sell_shares -- market_mcp stays too, purely for reference pricing.
+TRADERS_WITH_OPTIONS_TOOL = {"Cathie"}
 
 
 def trader_mcp_server_params(name: str):
@@ -37,6 +43,8 @@ def trader_mcp_server_params(name: str):
     ]
     if name in TRADERS_WITH_REGIME_TOOL:
         params.append(regime_mcp)
+    if name in TRADERS_WITH_OPTIONS_TOOL:
+        params.append(options_mcp)
     return params
 
 # The full set of MCP servers for the researcher: Fetch, Brave Search and Memory
