@@ -177,7 +177,9 @@ class Trader:
         try:
             await self.run_with_trace()
         except Exception as e:
+            import traceback
             print(f"Error running trader {self.name}: {e}")
+            traceback.print_exc()
         self.do_trade = not self.do_trade
 
         # Record a portfolio-value data point after every run, not just on trades,
