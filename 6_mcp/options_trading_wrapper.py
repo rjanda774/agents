@@ -4,13 +4,17 @@ Wrapper for options_trading_server.py - with full error logging
 """
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 log_file = Path(__file__).parent / "options_trading_debug.log"
 
-with open(log_file, "w", encoding="utf-8") as f:
+# Append, not overwrite -- this wrapper is spawned as a fresh subprocess every trading
+# cycle, so opening in "w" mode was wiping out history from every prior cycle on each
+# restart. Each session gets its own timestamped header instead.
+with open(log_file, "a", encoding="utf-8") as f:
     f.write("=" * 60 + "\n")
-    f.write("OPTIONS TRADING WRAPPER STARTING\n")
+    f.write(f"OPTIONS TRADING WRAPPER STARTING -- {datetime.now().isoformat()}\n")
     f.write("=" * 60 + "\n")
     f.write(f"Python: {sys.executable}\n")
     f.write(f"Version: {sys.version}\n")

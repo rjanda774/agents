@@ -129,7 +129,7 @@ class Trader:
             <div style='color: #3498db; font-weight: bold;'>&#128202; Cash in Holdings: ${holdings_value:,.2f}</div>
         </div>"""
 
-    def get_logs(self) -> str:
+    def get_logs(self, previous=None):
         logs = list(read_log(self.name, last_n=50))
         # Only show meaningful entries - skip noisy span/trace/agent/function/mcp_tools chatter
         SHOW_TYPES = {"account", "generation", "response"}
@@ -140,7 +140,13 @@ class Trader:
                 continue
             color = mapper.get(type, Color.WHITE).value
             response += f"<span style='color:{color}'>{timestamp} : [{type}] {message}</span><br/>"
-        return f"<div style='height:150px; overflow-y:auto;'>{response}</div>"
+        response = f"<div style='height:220px; overflow-y:auto;'>{response}</div>"
+        # Only replace the DOM content if it actually changed -- the browser resets scroll
+        # position on every innerHTML replacement, so re-rendering unchanged content every
+        # 2s makes the panel feel like it's "overwriting itself" if you're mid-scroll.
+        if response != previous:
+            return response
+        return gr.update()
 
     def get_options_positions_df(self) -> pd.DataFrame:
         """Get all of Cathie's options positions (open, closed, expired) as a log."""
@@ -384,7 +390,7 @@ class TraderView:
         log_timer = gr.Timer(value=2)
         log_timer.tick(
             fn=self.trader.get_logs,
-            inputs=[],
+            inputs=[self.log],
             outputs=[self.log],
             show_progress="hidden",
             queue=False,
