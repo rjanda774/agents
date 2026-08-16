@@ -120,11 +120,29 @@ async def get_options_chain(
         puts  = chain.puts
         calls = chain.calls
 
-        def extract(df):
+        # yfinance's raw chain never includes a "delta" column -- Yahoo's options API
+        # doesn't provide Greeks at all, only price/volume/IV. Compute real delta
+        # ourselves via Black-Scholes (same approach analyze_credit_spread uses) so
+        # there's an actual number to check strike selection against, instead of a
+        # column that silently never existed.
+        from optionlab.black_scholes import get_bs_info
+        years_to_exp = days_to_exp / 365.0
+
+        def compute_delta(strike: float, iv: float, option_type: str) -> float | None:
+            try:
+                if not iv or iv <= 0 or years_to_exp <= 0:
+                    return None
+                bs = get_bs_info(s=float(current_price), x=float(strike), r=0.05, vol=float(iv), years_to_maturity=years_to_exp)
+                return round(bs.put_delta if option_type == "put" else bs.call_delta, 4)
+            except Exception:
+                return None
+
+        def extract(df, option_type: str):
             cols = ["strike", "lastPrice", "bid", "ask", "volume", "impliedVolatility"]
-            if "delta" in df.columns:
-                cols.append("delta")
-            return df[cols].to_dict("records")[:25]
+            records = df[cols].to_dict("records")[:25]
+            for rec in records:
+                rec["delta"] = compute_delta(rec["strike"], rec.get("impliedVolatility"), option_type)
+            return records
 
         result = {
             "symbol": symbol,
@@ -132,8 +150,8 @@ async def get_options_chain(
             "today": str(today),
             "expiration_date": expiration_date,
             "days_to_expiration": days_to_exp,
-            "puts":  extract(puts),
-            "calls": extract(calls),
+            "puts":  extract(puts, "put"),
+            "calls": extract(calls, "call"),
         }
 
         return json.dumps(result, indent=2, default=str)
@@ -289,9 +307,11 @@ async def analyze_credit_spread(
         long_bs  = get_bs_info(s=float(current_price), x=long_strike,  r=0.05, vol=iv, years_to_maturity=years_to_exp)
 
         if option_type == "put":
+            short_leg_delta = round(short_bs.put_delta, 4)
             net_delta = round(long_bs.put_delta  - short_bs.put_delta,  4)
             net_theta = round(short_bs.put_theta - long_bs.put_theta,   4)
         else:
+            short_leg_delta = round(short_bs.call_delta, 4)
             net_delta = round(long_bs.call_delta  - short_bs.call_delta, 4)
             net_theta = round(short_bs.call_theta - long_bs.call_theta,  4)
         net_vega  = round(long_bs.vega  - short_bs.vega,  4)
@@ -334,6 +354,7 @@ async def analyze_credit_spread(
             "probability_of_profit": f"{pop:.1f}%",
             "risk_assessment": "High PoP" if pop >= 65 else "Moderate PoP" if pop >= 50 else "Low PoP",
             "greeks": {
+                "short_leg_delta": short_leg_delta,
                 "net_delta": net_delta,
                 "net_theta": net_theta,
                 "net_vega":  net_vega,
@@ -430,6 +451,29 @@ async def sell_credit_spread(
         max_loss = float(analysis['profit_loss']['max_loss'].replace('$', '').replace(',', ''))
         short_premium_per = float(analysis['premium']['short_leg'])
         long_premium_per  = float(analysis['premium']['long_leg'])
+        short_leg_delta = analysis.get('greeks', {}).get('short_leg_delta')
+
+        # HARD ENFORCEMENT: short leg must be genuinely far OTM (|delta| < 0.15). The prompt
+        # has asked for a delta band all along, but get_options_chain never actually returned
+        # real delta (yfinance's raw chain has no delta column at all -- that check was
+        # silently unenforceable), which let strikes close to or even in-the-money through.
+        # Real delta is now computed via Black-Scholes in both get_options_chain and here.
+        MAX_SHORT_DELTA = 0.15
+        if short_leg_delta is None:
+            return json.dumps({
+                "error": "TRADE REJECTED: could not compute short leg delta (missing/zero implied "
+                         "volatility or bad inputs from analyze_credit_spread). Cannot verify this "
+                         "strike is far enough out-of-the-money -- try a different strike or underlying."
+            })
+        if abs(short_leg_delta) > MAX_SHORT_DELTA:
+            return json.dumps({
+                "error": (
+                    f"TRADE REJECTED: short leg delta {short_leg_delta} (magnitude "
+                    f"{abs(short_leg_delta):.3f}) exceeds the {MAX_SHORT_DELTA} cap. This strike is too "
+                    f"close to the money. Move the short strike further out-of-the-money (lower strike "
+                    f"for a call, higher strike for a put) and retry."
+                )
+            })
 
         # HARD ENFORCEMENT: minimum net premium per trade. The strategy text/prompt has
         # asked for this all along, but it's been observed slipping through in practice
@@ -440,9 +484,9 @@ async def sell_credit_spread(
             return json.dumps({
                 "error": (
                     f"TRADE REJECTED: net premium ${net_premium:.2f} is below the ${MIN_NET_PREMIUM:.2f} "
-                    f"minimum. Not worth the capital/risk for this little income. Increase `contracts`, "
-                    f"move the short strike closer to the money (more premium, still within the "
-                    f"0.20-0.30 delta band), or pick a different underlying with richer premium."
+                    f"minimum. Not worth the capital/risk for this little income. Increase `contracts` "
+                    f"or pick a different underlying with richer premium (you can't just move the short "
+                    f"strike closer to the money for more premium -- that would breach the delta cap)."
                 )
             })
 

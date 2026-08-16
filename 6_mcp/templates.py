@@ -136,10 +136,21 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
   up front.
 - MINIMUM PREMIUM RULE (non-negotiable, server-enforced): net premium collected must be at least
   $100.00 total for the trade. sell_credit_spread will reject anything below that.
-- For bull_put: short_strike must have delta BETWEEN -0.20 and -0.30 (e.g. -0.25). Never sell a put with delta below -0.30 as it has too high a probability of expiring in the money.
-- For bear_call: short_strike must have delta BETWEEN 0.20 and 0.30 (e.g. 0.25). Never sell a call with delta above 0.30.
-- Delta is shown in the get_options_chain results - always check it before selecting strikes.
-- If no strike has delta in the 0.20-0.30 range, go further OTM until you find one. Do NOT compromise on delta.
+- DELTA RULE (non-negotiable, server-enforced): the short leg's delta magnitude must be
+  UNDER 0.15. sell_credit_spread computes real delta via Black-Scholes and rejects the
+  trade outright if it's breached -- this used to be prompt-only and unenforceable (delta
+  was never actually available to check), so verify it yourself up front rather than
+  finding out after the fact.
+  - Put deltas are NEGATIVE. For bull_put, that means short_strike's delta must be BETWEEN
+    -0.15 and 0 (e.g. -0.08 is fine, -0.20 is NOT -- it's more negative, i.e. larger
+    magnitude, i.e. too close to the money).
+  - Call deltas are POSITIVE. For bear_call, short_strike's delta must be BETWEEN 0 and
+    0.15 (e.g. 0.08 is fine, 0.20 is NOT).
+  - Delta is now shown in the get_options_chain results for every strike (computed via
+    Black-Scholes, not a raw yfinance field) -- always check it before selecting strikes.
+  - If no strike has |delta| under 0.15, go further OTM until you find one. Do NOT
+    compromise on this -- it directly controls how likely the position is to end up
+    in-the-money.
 - long_strike = short_strike - $5 (bull_put) or short_strike + $5 (bear_call)
 - Always use strikes and expiration_date that APPEAR in the get_options_chain results (format: YYYY-MM-DD)
 - Open interest on the strikes you choose should be > 100. If the chain shows very low open interest, the
@@ -150,7 +161,7 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 - Bear Call Spread (BEARISH/NEUTRAL): Sell lower call, buy higher call -> Collect premium if stock stays down
 - Max Profit = Premium collected (spreads expire worthless)
 - Max Loss = Spread width - Premium (stock moves through both strikes)
-- Target: 25-45 days to expiration, short leg delta 0.20-0.30 (=> ~70-80% PoP)
+- Target: 25-45 days to expiration, short leg |delta| under 0.15 (=> ~80-85%+ PoP)
 
 **Position Management - YOU MUST DO THIS FIRST, EVERY SINGLE RUN:**
 
@@ -230,7 +241,7 @@ TLT, XLF, XLE, XLK, XLV, and any liquid stock or ETF with price > $100 and open 
 
 IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setup where:
   - Expiration is 25-45 days out
-  - Short leg delta is 0.20-0.30
+  - Short leg |delta| is under 0.15
   - PoP >= 65%
   - Net premium >= $100.00
   - No earnings in the window
@@ -278,8 +289,8 @@ After closing, use the research tool to assess market conditions across sectors 
 Consider SPY, QQQ, IWM, sector ETFs (XLF, XLE, XLK, XLV, XLU, XLI), or any stock/ETF with price > $100
 and options open interest > 50. Avoid underlyings with earnings scheduled in the next 25-45 days.
 
-If after researching you cannot find a spread meeting all criteria (25-45 day expiry, delta 0.20-0.30,
-PoP >= 65%, premium >= $100.00, no earnings, no analyze errors), do not trade. That is the right call.
+If after researching you cannot find a spread meeting all criteria (25-45 day expiry, short leg |delta|
+under 0.15, PoP >= 65%, premium >= $100.00, no earnings, no analyze errors), do not trade. That is the right call.
 
 Your options strategy:
 {strategy}
