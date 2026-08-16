@@ -105,10 +105,14 @@ class Trader:
         if self.name == "Cathie":
             options_data = read_account(f"{self.name.lower()}_options")
             if options_data:
+                # Her real cash lives in the options account, not the untouched stock
+                # account -- she never buys/sells stocks, so self.account.balance would
+                # always just show the starting $10,000 regardless of trading activity.
+                options_cash = options_data.get("cash", cash_available)
                 collected = options_data.get("total_premium_collected", 0.0)
                 open_risk = sum(p.get("max_loss", 0) for p in options_data.get("open_positions", []))
                 return f"""<div style='text-align: center; font-size: 14px; padding: 5px;'>
-                    <div style='color: #2ecc71; font-weight: bold;'>💵 Cash: ${cash_available:,.2f}</div>
+                    <div style='color: #2ecc71; font-weight: bold;'>💵 Cash: ${options_cash:,.2f}</div>
                     <div style='color: #f39c12; font-weight: bold;'>&#128176; Premium Collected: ${collected:,.2f}</div>
                     <div style='color: #e74c3c; font-weight: bold;'>&#9888; Open Risk: ${open_risk:,.2f}</div>
                 </div>"""

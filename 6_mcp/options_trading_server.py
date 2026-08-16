@@ -430,7 +430,24 @@ async def sell_credit_spread(
         max_loss = float(analysis['profit_loss']['max_loss'].replace('$', '').replace(',', ''))
         short_premium_per = float(analysis['premium']['short_leg'])
         long_premium_per  = float(analysis['premium']['long_leg'])
-        
+
+        # HARD ENFORCEMENT: never risk more than 3% of available cash on a single trade.
+        # Checked against current cash, not cash-after-this-trade's-premium -- what you'd
+        # actually have to cover the max loss from is what you have going in.
+        MAX_RISK_PCT = 0.03
+        max_allowed_risk = options_account.cash * MAX_RISK_PCT
+        if max_loss > max_allowed_risk:
+            return json.dumps({
+                "error": (
+                    f"TRADE REJECTED: max loss ${max_loss:.2f} would risk "
+                    f"{(max_loss / options_account.cash * 100) if options_account.cash else float('inf'):.1f}% "
+                    f"of available cash (${options_account.cash:.2f}), exceeding the "
+                    f"{MAX_RISK_PCT * 100:.0f}% per-trade cap. Max allowed risk right now is "
+                    f"${max_allowed_risk:.2f}. Reduce `contracts`, pick a narrower spread width, "
+                    f"or choose strikes closer together to lower max loss."
+                )
+            })
+
         # Create option legs
         option_type = "put" if spread_type == "bull_put" else "call"
         

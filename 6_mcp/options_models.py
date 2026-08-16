@@ -59,43 +59,50 @@ class CreditSpread(BaseModel):
 class OptionsAccount(BaseModel):
     """Options-specific account tracking (separate from stock account)"""
     name: str
+    cash: float = 10_000.0
     open_positions: list[CreditSpread] = []
     closed_positions: list[CreditSpread] = []
     total_premium_collected: float = 0.0
     total_realized_pnl: float = 0.0
-    
+
     def open_spread(self, spread: CreditSpread):
-        """Open a new credit spread position"""
+        """Open a new credit spread position. Premium is credited to cash immediately,
+        matching real brokerage accounting (you receive the premium upfront)."""
         self.open_positions.append(spread)
         self.total_premium_collected += spread.net_premium_collected
-    
+        self.cash += spread.net_premium_collected
+
     def close_spread(self, position_id: str, closing_premium: float):
-        """Close an existing spread position"""
+        """Close an existing spread position. Closing cost is debited from cash --
+        buying back the spread costs money (or, rarely, could be a credit if closing_premium
+        is negative, e.g. a data-source quirk)."""
         for i, pos in enumerate(self.open_positions):
             if pos.position_id == position_id:
                 pos.status = "closed"
                 pos.closed_at = datetime.now().isoformat()
                 pos.closing_premium_paid = closing_premium
-                
+
                 pnl = pos.profit_loss()
                 self.total_realized_pnl += pnl
-                
+                self.cash -= closing_premium
+
                 self.closed_positions.append(pos)
                 self.open_positions.pop(i)
                 return pos
         return None
-    
+
     def total_open_risk(self) -> float:
         """Total max loss across all open positions"""
         return sum(pos.max_loss for pos in self.open_positions)
-    
+
     def total_unrealized_pnl(self) -> float:
         """Unrealized P/L on open positions (premium collected so far)"""
         return sum(pos.net_premium_collected for pos in self.open_positions)
-    
+
     def summary(self) -> dict:
         """Summary statistics"""
         return {
+            "cash": self.cash,
             "open_positions": len(self.open_positions),
             "closed_positions": len(self.closed_positions),
             "total_premium_collected": self.total_premium_collected,

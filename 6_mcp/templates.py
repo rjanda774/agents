@@ -127,6 +127,11 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 - EXPIRATION RULE (non-negotiable): The expiration date MUST be 25-45 calendar days from today.
   Do the arithmetic: expiration_date minus today's date = number of days. Must be between 25 and 45.
   A spread expiring tomorrow, next week, or in 2 weeks is FORBIDDEN. Do not sell it.
+- POSITION SIZE RULE (non-negotiable, server-enforced): max loss on any single trade must not exceed
+  3% of your current options-account cash. sell_credit_spread will reject the trade outright if you
+  breach this -- don't wait to find out, check analyze_credit_spread's max_loss against your cash
+  yourself before calling sell_credit_spread, and reduce `contracts` (or widen your margin below 3%)
+  up front.
 - For bull_put: short_strike must have delta BETWEEN -0.20 and -0.30 (e.g. -0.25). Never sell a put with delta below -0.30 as it has too high a probability of expiring in the money.
 - For bear_call: short_strike must have delta BETWEEN 0.20 and 0.30 (e.g. 0.25). Never sell a call with delta above 0.30.
 - Delta is shown in the get_options_chain results - always check it before selecting strikes.
