@@ -431,6 +431,21 @@ async def sell_credit_spread(
         short_premium_per = float(analysis['premium']['short_leg'])
         long_premium_per  = float(analysis['premium']['long_leg'])
 
+        # HARD ENFORCEMENT: minimum net premium per trade. The strategy text/prompt has
+        # asked for this all along, but it's been observed slipping through in practice
+        # (e.g. a live $69.50 and $18.50 trade both under the stated $100 floor) -- prompt
+        # instructions aren't reliable enough on their own, so enforce it here too.
+        MIN_NET_PREMIUM = 100.0
+        if net_premium < MIN_NET_PREMIUM:
+            return json.dumps({
+                "error": (
+                    f"TRADE REJECTED: net premium ${net_premium:.2f} is below the ${MIN_NET_PREMIUM:.2f} "
+                    f"minimum. Not worth the capital/risk for this little income. Increase `contracts`, "
+                    f"move the short strike closer to the money (more premium, still within the "
+                    f"0.20-0.30 delta band), or pick a different underlying with richer premium."
+                )
+            })
+
         # HARD ENFORCEMENT: never risk more than 3% of available cash on a single trade.
         # Checked against current cash, not cash-after-this-trade's-premium -- what you'd
         # actually have to cover the max loss from is what you have going in.

@@ -113,9 +113,11 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 
 7. Only execute sell_credit_spread() if ALL of these are true:
    - PoP >= 65%
-   - Net premium collected >= $100.00 per spread (not worth trading for pennies)
+   - Net premium collected >= $100.00 total for the trade (not worth trading for pennies).
+     This is server-enforced -- sell_credit_spread will reject anything below $100, so don't
+     bother trying.
    - No earnings in the expiration window
-   - Expiration is 25-45 days away
+   - Expiration is 25-45 days away (also server-enforced)
 
 8. IT IS OKAY NOT TO TRADE. If after researching 3-5 underlyings you cannot find a setup
    that meets all criteria, do NOT force a trade. Simply report what you looked at and why
@@ -132,6 +134,8 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
   breach this -- don't wait to find out, check analyze_credit_spread's max_loss against your cash
   yourself before calling sell_credit_spread, and reduce `contracts` (or widen your margin below 3%)
   up front.
+- MINIMUM PREMIUM RULE (non-negotiable, server-enforced): net premium collected must be at least
+  $100.00 total for the trade. sell_credit_spread will reject anything below that.
 - For bull_put: short_strike must have delta BETWEEN -0.20 and -0.30 (e.g. -0.25). Never sell a put with delta below -0.30 as it has too high a probability of expiring in the money.
 - For bear_call: short_strike must have delta BETWEEN 0.20 and 0.30 (e.g. 0.25). Never sell a call with delta above 0.30.
 - Delta is shown in the get_options_chain results - always check it before selecting strikes.
