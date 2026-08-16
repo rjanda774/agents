@@ -543,10 +543,14 @@ async def close_credit_spread(
 ) -> str:
     """Close (buy back) an existing credit spread position.
 
-    Use this tool to exit a position by buying back the spread. This is done when:
-    - The position has captured 75%+ of max profit (closing premium <= 25% of original)
-    - The underlying is moving against the position and you want to cut losses
-    - Expiration is within 7 days (avoid pin risk / assignment risk)
+    HARD ENFORCEMENT: this only succeeds if one of these is actually true, verified here
+    server-side against live data -- not just whatever `reason` you pass:
+    - The position has captured 75%+ of max profit (closing cost <= 25% of original premium)
+    - The underlying has breached the short strike (moving against the position)
+    - 7 or fewer days remain to expiration (avoid pin risk / assignment risk)
+    If none of those hold, the call is rejected and the position stays open. Don't call this
+    just because you feel like reconsidering a position -- only when one of the three
+    conditions above is genuinely met.
 
     To close: buy back the short leg and sell back the long leg.
     The closing cost is fetched live from the market.
@@ -593,14 +597,22 @@ async def close_credit_spread(
         except ValueError:
             pass  # If date parse fails, let it proceed
 
-        # Fetch current market prices for closing cost
+        # Fetch current market prices AND the underlying's current price together --
+        # need both to verify whether a close is actually justified, not just take the
+        # LLM's word for it via `reason`.
+        market_data_available = False
+        current_price = None
+        closing_cost = None
         try:
             def _fetch():
                 t = yf.Ticker(position.symbol)
                 chain = t.option_chain(position.expiration_date)
-                return chain
+                price = t.fast_info.get("lastPrice")
+                if not price:
+                    price = float(t.history(period="1d")["Close"].iloc[-1])
+                return chain, float(price)
 
-            chain = fetch_with_timeout(_fetch, timeout_seconds=30)
+            chain, current_price = fetch_with_timeout(_fetch, timeout_seconds=30)
             df = chain.puts if position.spread_type == "bull_put" else chain.calls
 
             available = df['strike'].values
@@ -610,18 +622,55 @@ async def close_credit_spread(
             short_row = df[df['strike'] == short_strike]
             long_row  = df[df['strike'] == long_strike]
 
-            if short_row.empty or long_row.empty:
-                closing_cost = position.net_premium_collected * 0.25  # fallback estimate
-                price_source = "estimated (market data unavailable)"
-            else:
+            if not short_row.empty and not long_row.empty:
                 # Cost to close = buy back short + sell back long
                 short_ask = (short_row.iloc[0]['bid'] + short_row.iloc[0]['ask']) / 2
                 long_bid  = (long_row.iloc[0]['bid']  + long_row.iloc[0]['ask'])  / 2
                 closing_cost = (short_ask - long_bid) * 100 * position.short_leg.contracts
                 price_source = "live market"
-        except Exception as e:
-            closing_cost = position.net_premium_collected * 0.25
-            price_source = f"estimated (fetch error: {e})"
+                market_data_available = True
+        except Exception:
+            pass  # handled below -- no fabricated "estimate", we just don't have data
+
+        # HARD ENFORCEMENT: verify a real closing rule actually applies, server-side.
+        # We've seen positions get closed within minutes of opening them for no valid
+        # reason -- don't just trust `reason`, check the actual numbers.
+        days_to_exp = (dt_mod.date.fromisoformat(position.expiration_date) - today).days
+        expiry_trigger = days_to_exp <= 7  # computable without any market data
+
+        breach_trigger = False
+        profit_trigger = False
+        if market_data_available:
+            if position.spread_type == "bull_put":
+                breach_trigger = current_price <= position.short_leg.strike
+            else:
+                breach_trigger = current_price >= position.short_leg.strike
+            if position.net_premium_collected:
+                profit_trigger = closing_cost <= 0.25 * position.net_premium_collected
+
+        if not (expiry_trigger or breach_trigger or profit_trigger):
+            detail = (
+                f"current price ${current_price:.2f} vs short strike {position.short_leg.strike} "
+                f"(not breached); closing cost ${closing_cost:.2f} is "
+                f"{(closing_cost / position.net_premium_collected * 100) if position.net_premium_collected else 0:.1f}% "
+                f"of original premium ${position.net_premium_collected:.2f} (need <=25% to take profit)."
+                if market_data_available else
+                "live market data was unavailable to check the breach/profit conditions."
+            )
+            return json.dumps({
+                "error": (
+                    f"CLOSE REJECTED: no exit rule applies to position {position_id} yet. "
+                    f"Days to expiration: {days_to_exp} (need <=7 to force-close). {detail} "
+                    f"Leave this position open."
+                )
+            })
+
+        if not market_data_available:
+            # Only reachable via expiry_trigger (the only rule verifiable without market
+            # data). Don't fabricate a profit estimate -- assume breakeven (pay back the
+            # full original premium) rather than silently reporting a fake gain.
+            closing_cost = position.net_premium_collected
+            price_source = "ESTIMATED (market data unavailable) -- assumed breakeven, forced close at DTE<=7"
 
         # Close the position
         closed = options_account.close_spread(position_id, closing_cost)

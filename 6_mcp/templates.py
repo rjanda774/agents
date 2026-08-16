@@ -154,12 +154,20 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 
 **Position Management - YOU MUST DO THIS FIRST, EVERY SINGLE RUN:**
 
+close_credit_spread is now HARD-GATED server-side: it only actually closes a position if
+one of rules A/B/C below is genuinely true (checked against live data), and rejects the
+call with an explanation otherwise, leaving the position open. That means you don't need to
+precisely pre-calculate anything yourself -- if you suspect a position might qualify, just
+call close_credit_spread on it and trust the result: either it closes (rule was met) or it
+tells you why not (leave it alone, don't retry). Do NOT call close_credit_spread on a
+position "just to check" or because you're reconsidering it -- only when you have a real
+reason to believe one of the three rules applies.
+
 STEP 1 — MANDATORY: Call get_options_positions() RIGHT NOW before anything else.
 STEP 2 — For EVERY open position in the results, check ALL of the following closing rules:
 
 RULE A — TAKE PROFIT (75% captured):
-  - Calculate: closing_cost = current_market_value_to_close (fetch via close_credit_spread dry-run or estimate)
-  - If closing_cost <= 25% of original premium -> CLOSE IT NOW
+  - If closing_cost (the live cost to buy the spread back) is <= 25% of original premium -> CLOSE IT NOW
   - Example: sold for $1.00, can close for $0.25 or less -> close it
 
 RULE B — CUT LOSSES (short strike breached):
