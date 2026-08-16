@@ -154,14 +154,19 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 
 **Position Management - YOU MUST DO THIS FIRST, EVERY SINGLE RUN:**
 
-close_credit_spread is now HARD-GATED server-side: it only actually closes a position if
-one of rules A/B/C below is genuinely true (checked against live data), and rejects the
-call with an explanation otherwise, leaving the position open. That means you don't need to
-precisely pre-calculate anything yourself -- if you suspect a position might qualify, just
-call close_credit_spread on it and trust the result: either it closes (rule was met) or it
-tells you why not (leave it alone, don't retry). Do NOT call close_credit_spread on a
-position "just to check" or because you're reconsidering it -- only when you have a real
-reason to believe one of the three rules applies.
+close_credit_spread is HARD-GATED server-side: it only actually closes a position if one of
+rules A/B/C below is genuinely true (checked against live data), and rejects the call with
+an explanation otherwise, leaving the position open. Use it like this:
+- Rules B (breach) and C (expiry) you can and should check YOURSELF first, from data you
+  already have (the position's expiration_date and short strike from get_options_positions,
+  and the underlying's current price from your own research/get_options_chain calls). Only
+  call close_credit_spread for these two reasons once you've confirmed the rule is actually
+  met -- don't call it speculatively "to see."
+- Rule A (take-profit) is different: you have no way to know the live cost to close a
+  position except by calling close_credit_spread itself, since there is no separate
+  quote-only tool. It's fine and expected to call it to check this one specifically. If it
+  rejects the call, that just means the position hasn't hit 75% yet -- leave it open and
+  move on, don't retry it this cycle.
 
 STEP 1 — MANDATORY: Call get_options_positions() RIGHT NOW before anything else.
 STEP 2 — For EVERY open position in the results, check ALL of the following closing rules:
