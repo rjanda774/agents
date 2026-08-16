@@ -22,6 +22,7 @@ class Trader:
         self.lastname = lastname
         self.model_name = model_name
         self.account = Account.get(name)
+        self._last_log_html = None
 
     def reload(self):
         self.account = Account.get(self.name)
@@ -129,7 +130,7 @@ class Trader:
             <div style='color: #3498db; font-weight: bold;'>&#128202; Cash in Holdings: ${holdings_value:,.2f}</div>
         </div>"""
 
-    def get_logs(self, previous=None):
+    def get_logs(self):
         logs = list(read_log(self.name, last_n=50))
         # Only show meaningful entries - skip noisy span/trace/agent/function/mcp_tools chatter
         SHOW_TYPES = {"account", "generation", "response"}
@@ -143,8 +144,12 @@ class Trader:
         response = f"<div style='height:220px; overflow-y:auto;'>{response}</div>"
         # Only replace the DOM content if it actually changed -- the browser resets scroll
         # position on every innerHTML replacement, so re-rendering unchanged content every
-        # 2s makes the panel feel like it's "overwriting itself" if you're mid-scroll.
-        if response != previous:
+        # 2s makes the panel feel like it's "overwriting itself" if you're mid-scroll. Track
+        # the previous value on the instance instead of round-tripping it through Gradio as
+        # a component input -- that was unreliable (some Timer/session-timing edge case sent
+        # 0 inputs instead of 1, crashing the app on every load).
+        if response != self._last_log_html:
+            self._last_log_html = response
             return response
         return gr.update()
 
@@ -390,7 +395,7 @@ class TraderView:
         log_timer = gr.Timer(value=2)
         log_timer.tick(
             fn=self.trader.get_logs,
-            inputs=[self.log],
+            inputs=[],
             outputs=[self.log],
             show_progress="hidden",
             queue=False,
