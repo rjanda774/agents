@@ -332,7 +332,7 @@ class TraderView:
             with gr.Row():
                 self.cash_breakdown = gr.HTML(self.trader.get_cash_breakdown)
             with gr.Row(variant="panel"):
-                self.log = gr.HTML(self.trader.get_logs)
+                self.log = gr.HTML(self.trader.get_logs())
             if is_cathie:
                 with gr.Row():
                     self.options_summary = gr.HTML(self.trader.get_options_summary)
