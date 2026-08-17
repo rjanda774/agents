@@ -83,17 +83,20 @@ class Trader:
         return pd.DataFrame(transactions)
 
     def get_portfolio_value(self) -> str:
-        """Calculate total portfolio value. For Cathie, includes options P&L."""
-        portfolio_value = self.account.calculate_portfolio_value() or 0.0
-        pnl = self.account.calculate_profit_loss(portfolio_value) or 0.0
-
+        """Calculate total portfolio value. For Cathie, tracks her options account's live
+        cash directly, not the untouched stock account -- see get_cash_breakdown."""
         if self.name == "Cathie":
-            # Add realized options P&L to portfolio value
+            # Her real capital lives entirely in the options account -- self.account (the
+            # stock account) is a separate, untouched $10,000 pool she never actually
+            # trades, so blending its starting balance in would double-count capital and
+            # not match the "Cash: $X" figure shown just below.
+            starting_cash = 10_000.0
             options_data = read_account(f"{self.name.lower()}_options")
-            if options_data:
-                options_pnl = options_data.get("total_realized_pnl", 0.0)
-                pnl += options_pnl
-                portfolio_value += options_pnl
+            portfolio_value = options_data.get("cash", starting_cash) if options_data else starting_cash
+            pnl = portfolio_value - starting_cash
+        else:
+            portfolio_value = self.account.calculate_portfolio_value() or 0.0
+            pnl = self.account.calculate_profit_loss(portfolio_value) or 0.0
 
         color = "green" if pnl >= 0 else "red"
         emoji = "⬆" if pnl >= 0 else "⬇"
