@@ -235,6 +235,17 @@ class Trader:
         # so the dashboard chart reflects price movement between trades too.
         account = Account.get(self.name)
         portfolio_value = account.calculate_portfolio_value()
+        if self.name in TRADERS_WITH_OPTIONS_TOOL:
+            # Options traders' real trading activity lives in their separate cathie_options
+            # pseudo-account, not the stock Account above (which stays untouched at its
+            # starting balance forever, since they never buy/sell stocks -- so
+            # calculate_portfolio_value() alone is always flat and the chart never moves).
+            # Blend in realized options P&L, matching app.py: Trader.get_portfolio_value's
+            # formula for the dashboard's headline number, so the chart and that number
+            # stay consistent with each other.
+            options_data = read_account(f"{self.name.lower()}_options")
+            if options_data:
+                portfolio_value += options_data.get("total_realized_pnl", 0.0)
         account.portfolio_value_time_series.append(
             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), portfolio_value)
         )
