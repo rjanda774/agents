@@ -1,0 +1,26 @@
+[project]
+name = "trading-floor"
+version = "0.1.0"
+description = "Cathie's autonomous options credit-spread paper-trading floor (see ../CLAUDE.md)"
+requires-python = ">=3.10"
+dependencies = [
+    "openai-agents",
+    "openai",
+    "mcp",
+    "python-dotenv",
+    "gradio",
+    "plotly",
+    "pandas",
+    "numpy",
+    "pydantic",
+    "requests",
+    "polygon-api-client",
+    "yfinance",
+    "optionlab",
+    "scipy",
+]
+
+[tool.uv]
+# This directory is a flat collection of runnable scripts, not an installable library --
+# don't try to build/install it as its own package, just manage its dependencies.
+package = false
