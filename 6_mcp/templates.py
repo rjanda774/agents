@@ -226,41 +226,6 @@ STEP 3 — After closing any positions that triggered rules A/B/C, THEN look for
     return base_instructions
 
 def trade_message(name, strategy, account):
-    if name == "Cathie":
-        return f"""TODAY IS {datetime.now().strftime("%Y-%m-%d")}. Use this date to calculate DTE for all positions.
-
-MANDATORY STEP 1 — Call get_options_positions() RIGHT NOW.
-Then review EVERY open position against these rules (use today's date to calculate DTE):
-  - DTE <= 7 days: CLOSE IMMEDIATELY (assignment/pin risk)
-  - Short strike breached by underlying: CLOSE IMMEDIATELY (max loss scenario)
-  - Closing cost <= 25% of original premium: CLOSE (75%+ profit captured)
-  - expiration_date is in the past: do NOT attempt to close — it has already expired, leave it alone
-You MUST call close_credit_spread() for any open position that triggers a rule.
-
-STEP 2 — Research first, then look for new spreads.
-Use the research tool to identify:
-  - Overall market direction and which sectors are trending clearly bullish or bearish
-  - Any stocks or ETFs with strong momentum and news catalysts
-  - Upcoming earnings in the next 25-45 days (avoid those underlyings)
-Then check 3-5 candidates using get_options_chain(). Your universe includes SPY, QQQ, IWM, GLD,
-TLT, XLF, XLE, XLK, XLV, and any liquid stock or ETF with price > $100 and open interest > 50.
-
-IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setup where:
-  - Expiration is 25-45 days out
-  - Short leg |delta| is under 0.15
-  - PoP >= 65%
-  - Net premium >= $100.00
-  - No earnings in the window
-  - analyze_credit_spread() succeeds without errors
-...then do not force a trade. Report what you looked at and why nothing qualified. Wait for next session.
-
-Your options strategy:
-{strategy}
-Your current positions summary:
-{account}
-Now execute. Account name is Cathie. Start with get_options_positions() immediately.
-After all actions, send a push notification summarizing any closes and new opens, then a 2-3 sentence appraisal.
-"""
     return f"""Based on your investment strategy, you should now look for new opportunities.
 Use the research tool to find news and opportunities consistent with your strategy.
 Do not use the 'get company news' tool; use the research tool instead.
@@ -281,30 +246,6 @@ respond with a brief 2-3 sentence appraisal of your portfolio and its outlook.
 """
 
 def rebalance_message(name, strategy, account):
-    if name == "Cathie":
-        return f"""TODAY IS {datetime.now().strftime("%Y-%m-%d")}. Use this date to calculate DTE for all positions.
-
-MANDATORY: Call get_options_positions() RIGHT NOW. Then close any open position that meets these rules:
-  - DTE <= 7 days from today -> CLOSE (prevents assignment)
-  - Short strike breached -> CLOSE (cut losses immediately)
-  - Closing cost <= 25% of original premium -> CLOSE (lock in 75%+ profit)
-  - expiration_date is in the past -> do NOT close, it has already expired, leave it alone
-Call close_credit_spread() for each qualifying position. This step is not optional.
-
-After closing, use the research tool to assess market conditions across sectors and identify directional setups.
-Consider SPY, QQQ, IWM, sector ETFs (XLF, XLE, XLK, XLV, XLU, XLI), or any stock/ETF with price > $100
-and options open interest > 50. Avoid underlyings with earnings scheduled in the next 25-45 days.
-
-If after researching you cannot find a spread meeting all criteria (25-45 day expiry, short leg |delta|
-under 0.15, PoP >= 65%, premium >= $100.00, no earnings, no analyze errors), do not trade. That is the right call.
-
-Your options strategy:
-{strategy}
-Your current positions summary:
-{account}
-Now execute. Account name is Cathie. Start with get_options_positions() immediately.
-After all actions, send a push notification and a 2-3 sentence appraisal.
-"""
     return f"""Based on your investment strategy, you should now examine your portfolio and decide if you need to rebalance.
 Use the research tool to find news and opportunities affecting your existing portfolio.
 Use the tools to research stock price and other company information affecting your existing portfolio. {note}
@@ -321,3 +262,81 @@ Here is the current datetime:
 Now, carry out analysis, make your decision and execute trades. Your account name is {name}.
 After you've executed your trades, send a push notification with a brief sumnmary of trades and the health of the portfolio, then
 respond with a brief 2-3 sentence appraisal of your portfolio and its outlook."""
+
+
+# Cathie-only: her cycle runs as two separate Runner.run passes (see traders.py:
+# Trader.run_agent_two_pass) instead of the single trade_message/rebalance_message call
+# other traders get, each with its own turn budget -- her combined close-and-find-new-trades
+# workflow was routinely running past a single shared MAX_TURNS budget (see traders.py).
+
+def close_positions_message(strategy, account):
+    """Pass 1 of Cathie's cycle: review open positions and close anything that meets a
+    closing rule. Deliberately does NOT ask her to look for new trades -- that's pass 2,
+    new_trades_message, run separately afterward with its own turn budget."""
+    return f"""TODAY IS {datetime.now().strftime("%Y-%m-%d")}. Use this date to calculate DTE for all positions.
+
+This is your POSITION REVIEW pass for this cycle. Your only job right now is to review your
+open positions and close whichever ones meet a closing rule below. Do NOT research or look
+for new trades in this pass -- that happens separately, right after this one.
+
+MANDATORY STEP 1 — Call get_options_positions() RIGHT NOW.
+STEP 2 — For EVERY open position in the results, check ALL of the following closing rules
+(use today's date to calculate DTE):
+  - DTE <= 7 days: CLOSE IMMEDIATELY (assignment/pin risk)
+  - Short strike breached by underlying: CLOSE IMMEDIATELY (max loss scenario)
+  - Closing cost <= 25% of original premium: CLOSE (75%+ profit captured)
+  - expiration_date is in the past: do NOT attempt to close — it has already expired, leave it alone
+You MUST call close_credit_spread() for any open position that triggers a rule.
+
+If you closed one or more positions, send a push notification with a brief summary of what
+closed and why. If nothing needed closing, skip the notification -- no need to notify every cycle.
+
+Your options strategy:
+{strategy}
+Your current positions summary:
+{account}
+Now execute. Account name is Cathie. Start with get_options_positions() immediately.
+Finish with a short summary (a few sentences) of what you found and did -- the next pass
+this cycle will read your summary for context, so make it useful: which positions (if any)
+you closed and why, and which you left open.
+"""
+
+
+def new_trades_message(strategy, account, prior_pass_summary):
+    """Pass 2 of Cathie's cycle: research and open new credit spreads, run immediately after
+    close_positions_message in a separate Runner.run with its own turn budget. `account`
+    reflects live state, already updated by pass 1's closes; `prior_pass_summary` is pass 1's
+    own final_output (or a placeholder if that pass errored/ran out of turns) so this pass has
+    the context to give one combined push notification covering the whole cycle."""
+    return f"""TODAY IS {datetime.now().strftime("%Y-%m-%d")}. Use this date for any DTE/earnings-window arithmetic.
+
+This is your NEW-TRADE SEARCH pass, run right after your position-review pass earlier this
+cycle. Your position-review pass reported:
+\"\"\"{prior_pass_summary}\"\"\"
+
+Your job now: research market conditions and look for new credit spread opportunities.
+Use the research tool to identify:
+  - Overall market direction and which sectors are trending clearly bullish or bearish
+  - Any stocks or ETFs with strong momentum and news catalysts
+  - Upcoming earnings in the next 25-45 days (avoid those underlyings)
+Then check 3-5 candidates using get_options_chain(). Your universe includes SPY, QQQ, IWM, GLD,
+TLT, XLF, XLE, XLK, XLV, and any liquid stock or ETF with price > $100 and open interest > 50.
+
+IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setup where:
+  - Expiration is 25-45 days out
+  - Short leg |delta| is under 0.15
+  - PoP >= 65%
+  - Net premium >= $100.00
+  - No earnings in the window
+  - analyze_credit_spread() succeeds without errors
+...then do not force a trade. Report what you looked at and why nothing qualified. Wait for next session.
+
+Your options strategy:
+{strategy}
+Your current positions summary (already reflects any closes from your position-review pass):
+{account}
+Now execute. Account name is Cathie.
+After all actions (whether or not you traded), send ONE push notification summarizing this
+whole cycle -- both the position-review pass above and this pass -- then reply with a 2-3
+sentence appraisal.
+"""
