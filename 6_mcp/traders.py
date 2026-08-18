@@ -99,10 +99,10 @@ class Trader:
         )
         return self.agent
 
-    async def get_account_report(self) -> str:
+    async def get_account_report(self, accounts_server=None) -> str:
         if self.name in TRADERS_WITH_OPTIONS_TOOL:
             return self._get_options_account_summary()
-        account = await read_accounts_resource(self.name)
+        account = await read_accounts_resource(self.name, accounts_server)
         account_json = json.loads(account)
         account_json.pop("portfolio_value_time_series", None)
         return json.dumps(account_json)
@@ -154,11 +154,17 @@ class Trader:
 
     async def run_agent(self, trader_mcp_servers, researcher_mcp_servers):
         self.agent = await self.create_agent(trader_mcp_servers, researcher_mcp_servers)
+        # accounts_server is always trader_mcp_servers' first entry (see
+        # mcp_params.trader_mcp_server_params), given an explicit name in
+        # run_with_mcp_servers so it can be found by name rather than by position.
+        # Reused below instead of accounts_client.py opening its own ad-hoc connection
+        # per call -- see the comment atop accounts_client.py for why that mattered.
+        accounts_server = next((s for s in trader_mcp_servers if s.name == "accounts_server.py"), None)
         if self.name in TRADERS_WITH_OPTIONS_TOOL:
-            await self.run_agent_two_pass()
+            await self.run_agent_two_pass(accounts_server)
             return
-        account = await self.get_account_report()
-        strategy = await read_strategy_resource(self.name)
+        account = await self.get_account_report(accounts_server)
+        strategy = await read_strategy_resource(self.name, accounts_server)
         message = (
             trade_message(self.name, strategy, account)
             if self.do_trade
@@ -166,7 +172,7 @@ class Trader:
         )
         await Runner.run(self.agent, message, max_turns=MAX_TURNS)
 
-    async def run_agent_two_pass(self):
+    async def run_agent_two_pass(self, accounts_server=None):
         """Options traders (currently just Cathie) run their cycle as two independent
         Runner.run passes on the same agent: close_positions_message first, then
         new_trades_message. See CLOSE_PASS_MAX_TURNS/TRADE_PASS_MAX_TURNS above for why.
@@ -176,9 +182,9 @@ class Trader:
         position review doesn't also cost the new-trade search. Pass 2's own exceptions are
         left to propagate to run()'s existing catch-all, same as the single-pass path.
         """
-        strategy = await read_strategy_resource(self.name)
+        strategy = await read_strategy_resource(self.name, accounts_server)
 
-        account_before_close = await self.get_account_report()
+        account_before_close = await self.get_account_report(accounts_server)
         close_message = close_positions_message(strategy, account_before_close)
         close_summary = "(Position review did not complete -- it errored or ran out of turns; treat existing positions as unreviewed this cycle.)"
         try:
@@ -188,7 +194,7 @@ class Trader:
             print(f"{self.name}: position-review pass failed: {e}")
 
         # Re-read live state so the new-trade pass sees any closes pass 1 just made.
-        account_after_close = await self.get_account_report()
+        account_after_close = await self.get_account_report(accounts_server)
         trade_message_text = new_trades_message(strategy, account_after_close, close_summary)
         await Runner.run(self.agent, trade_message_text, max_turns=TRADE_PASS_MAX_TURNS)
 
@@ -196,7 +202,13 @@ class Trader:
         async with AsyncExitStack() as stack:
             trader_mcp_servers = [
                 await stack.enter_async_context(
-                    MCPServerStdio(params, client_session_timeout_seconds=120)
+                    # Named after the launched script (e.g. "accounts_server.py") rather
+                    # than left to MCPServerStdio's default -- every local server here is
+                    # spawned with the same PYTHON interpreter, so the default name
+                    # ("stdio: <interpreter path>") would be identical across all of them
+                    # and useless for picking accounts_server back out of the list by name
+                    # (see run_agent above).
+                    MCPServerStdio(params, name=params["args"][0], client_session_timeout_seconds=120)
                 )
                 for params in trader_mcp_server_params(self.name)
             ]
