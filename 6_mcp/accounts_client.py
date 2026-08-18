@@ -1,0 +1,80 @@
+import mcp
+from mcp.client.stdio import stdio_client
+from mcp import StdioServerParameters
+from agents import FunctionTool
+from mcp_params import PYTHON, FULL_ENV
+import json
+
+# Use the same interpreter/env as every other spawned MCP server (see mcp_params.py's
+# PYTHON/FULL_ENV comments) -- this file used to hardcode `uv run` with env=None
+# independently of mcp_params.py, which meant it never got either of those fixes: `uv run`
+# corrupting the stdio stream, and a missing environment (e.g. no APPDATA on Windows)
+# making the child unable to import anything non-stdlib. Both surface identically as an
+# opaque "Connection closed" McpError on session.initialize().
+params = StdioServerParameters(command=PYTHON, args=["accounts_server.py"], env=FULL_ENV)
+
+# Every function below takes an optional `server` -- an already-connected MCP server
+# object (an `agents.mcp.MCPServer`, e.g. the persistent accounts_server entry inside
+# trader_mcp_servers) exposing the same list_tools/call_tool/read_resource methods a
+# raw ClientSession does. traders.py's cycle already keeps one such connection open for
+# its whole run; passing it in here reuses that connection instead of spawning a brand-new
+# subprocess and handshake for every single call, which is what happened before this fix
+# (accounts_server got the uv-run/env=None connection bug fixed in isolation, but never
+# stopped reconnecting per-call). When `server` is omitted (e.g. from a notebook doing a
+# one-off lookup outside any trading cycle), these fall back to opening their own ad-hoc
+# connection exactly as before.
+
+
+async def list_accounts_tools(server=None):
+    if server is not None:
+        return await server.list_tools()
+    async with stdio_client(params) as streams:
+        async with mcp.ClientSession(*streams) as session:
+            await session.initialize()
+            tools_result = await session.list_tools()
+            return tools_result.tools
+
+async def call_accounts_tool(tool_name, tool_args, server=None):
+    if server is not None:
+        return await server.call_tool(tool_name, tool_args)
+    async with stdio_client(params) as streams:
+        async with mcp.ClientSession(*streams) as session:
+            await session.initialize()
+            result = await session.call_tool(tool_name, tool_args)
+            return result
+
+async def read_accounts_resource(name, server=None):
+    uri = f"accounts://accounts_server/{name}"
+    if server is not None:
+        result = await server.read_resource(uri)
+        return result.contents[0].text
+    async with stdio_client(params) as streams:
+        async with mcp.ClientSession(*streams) as session:
+            await session.initialize()
+            result = await session.read_resource(uri)
+            return result.contents[0].text
+
+async def read_strategy_resource(name, server=None):
+    uri = f"accounts://strategy/{name}"
+    if server is not None:
+        result = await server.read_resource(uri)
+        return result.contents[0].text
+    async with stdio_client(params) as streams:
+        async with mcp.ClientSession(*streams) as session:
+            await session.initialize()
+            result = await session.read_resource(uri)
+            return result.contents[0].text
+
+async def get_accounts_tools_openai(server=None):
+    openai_tools = []
+    for tool in await list_accounts_tools(server):
+        schema = {**tool.inputSchema, "additionalProperties": False}
+        openai_tool = FunctionTool(
+            name=tool.name,
+            description=tool.description,
+            params_json_schema=schema,
+            on_invoke_tool=lambda ctx, args, toolname=tool.name: call_accounts_tool(toolname, json.loads(args), server)
+
+        )
+        openai_tools.append(openai_tool)
+    return openai_tools
