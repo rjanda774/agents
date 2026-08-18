@@ -29,11 +29,14 @@ except PackageNotFoundError:
 # Pass the full environment through explicitly to every spawned server to avoid this.
 FULL_ENV = dict(os.environ)
 
-# Local MCP servers are launched with this exact interpreter (sys.executable), not `uv run`.
-# 6_mcp/ has no pyproject.toml/uv.lock (see CLAUDE.md), so `uv run <script>.py` treats every
-# invocation as an ad-hoc script and can print resolution/status text to stdout -- which
-# corrupts the MCP stdio JSON-RPC stream. Using the interpreter already running
-# trading_floor.py sidesteps that entirely.
+# Local MCP servers are launched with this exact interpreter (sys.executable), not `uv run` --
+# guarantees the exact same interpreter/env as the parent process regardless of how
+# trading_floor.py itself was launched (uv run or a hand-managed venv's plain python; see
+# CLAUDE.md's "Running things"). This also happens to sidestep a real problem `uv run
+# <script>.py` used to hit here when 6_mcp/ had no pyproject.toml/uv.lock: it treated every
+# invocation as an ad-hoc script and could print resolution/status text to stdout, corrupting
+# the MCP stdio JSON-RPC stream. A manifest/lock exists now, but sys.executable stays the
+# right choice regardless -- it's about matching the parent's interpreter, not the lock file.
 PYTHON = sys.executable
 
 # The MCP server for the Trader to read Market Data

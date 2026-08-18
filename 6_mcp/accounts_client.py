@@ -2,9 +2,16 @@ import mcp
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from agents import FunctionTool
+from mcp_params import PYTHON, FULL_ENV
 import json
 
-params = StdioServerParameters(command="uv", args=["run", "accounts_server.py"], env=None)
+# Use the same interpreter/env as every other spawned MCP server (see mcp_params.py's
+# PYTHON/FULL_ENV comments) -- this file used to hardcode `uv run` with env=None
+# independently of mcp_params.py, which meant it never got either of those fixes: `uv run`
+# corrupting the stdio stream, and a missing environment (e.g. no APPDATA on Windows)
+# making the child unable to import anything non-stdlib. Both surface identically as an
+# opaque "Connection closed" McpError on session.initialize().
+params = StdioServerParameters(command=PYTHON, args=["accounts_server.py"], env=FULL_ENV)
 
 
 async def list_accounts_tools():
