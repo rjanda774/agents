@@ -50,7 +50,15 @@ def is_market_open() -> bool:
         client = RESTClient(polygon_api_key)
         market_status = client.get_market_status()
         return market_status.market == "open"
-    return _polygon_rate_limited_call(_call)
+    try:
+        return _polygon_rate_limited_call(_call)
+    except Exception as e:
+        # Unlike get_share_price, there's no safe "just make something up" fallback here -
+        # trading blind on a guessed market status is worse than skipping a cycle. Fail
+        # safe by reporting closed, so trading_floor.py's scheduler loop skips this cycle
+        # and tries again next time instead of crashing the whole process.
+        print(f"Was not able to check market status via Polygon due to {e}; treating market as closed for this cycle")
+        return False
 
 
 def get_all_share_prices_polygon_eod() -> dict[str, float]:
