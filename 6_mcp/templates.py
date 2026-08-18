@@ -184,6 +184,11 @@ an explanation otherwise, leaving the position open. Use it like this:
   quote-only tool. It's fine and expected to call it to check this one specifically. If it
   rejects the call, that just means the position hasn't hit 75% yet -- leave it open and
   move on, don't retry it this cycle.
+- A rejection is an ordinary-looking JSON response with an "error" key -- close_credit_spread
+  does not raise an exception when it rejects a call, so it's easy to skim past. NEVER report
+  a position as closed, state a P&L for it, or send a push notification about it unless the
+  tool's response actually contains "status": "POSITION CLOSED". If you see "error" instead,
+  the position is still open -- say so plainly, don't narrate a close that didn't happen.
 
 STEP 1 — MANDATORY: Call get_options_positions() RIGHT NOW before anything else.
 STEP 2 — For EVERY open position in the results, check ALL of the following closing rules:
@@ -288,8 +293,21 @@ STEP 2 — For EVERY open position in the results, check ALL of the following cl
   - expiration_date is in the past: do NOT attempt to close — it has already expired, leave it alone
 You MUST call close_credit_spread() for any open position that triggers a rule.
 
-If you closed one or more positions, send a push notification with a brief summary of what
-closed and why. If nothing needed closing, skip the notification -- no need to notify every cycle.
+CRITICAL — VERIFY BEFORE YOU REPORT ANYTHING CLOSED: close_credit_spread rejects the call
+if none of its own exit conditions are genuinely met server-side, and returns a JSON object
+with an "error" key when it does -- it does NOT raise an exception, so a rejection looks like
+an ordinary response, easy to skim past. Before you say a position closed, or its P&L, or put
+it in a push notification: check that the tool's response contains "status": "POSITION CLOSED",
+not an "error" key. If you see "error", the position is STILL OPEN -- nothing happened. Do not
+report it as closed, do not state a P&L for it, and do not send a push notification claiming a
+close. Call get_options_positions() again afterward if you're unsure a close actually went
+through; trust that over your own memory of what you called. Reporting a close that didn't
+happen is worse than not closing anything.
+
+If you closed one or more positions -- verified via the tool's own success response, not your
+recollection of calling the tool -- send a push notification with a brief summary of what
+closed and why. If nothing needed closing (or a close attempt was rejected), skip the
+notification -- no need to notify every cycle, and never notify a rejected close as a success.
 
 Your options strategy:
 {strategy}
@@ -297,8 +315,8 @@ Your current positions summary:
 {account}
 Now execute. Account name is Cathie. Start with get_options_positions() immediately.
 Finish with a short summary (a few sentences) of what you found and did -- the next pass
-this cycle will read your summary for context, so make it useful: which positions (if any)
-you closed and why, and which you left open.
+this cycle will read your summary for context AS TRUSTED FACT, so only report closes that
+the tool's response actually confirmed; a false "closed" here will mislead the next pass too.
 """
 
 
