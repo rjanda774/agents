@@ -21,12 +21,16 @@ params = StdioServerParameters(command=PYTHON, args=["accounts_server.py"], env=
 # subprocess and handshake for every single call, which is what happened before this fix
 # (accounts_server got the uv-run/env=None connection bug fixed in isolation, but never
 # stopped reconnecting per-call). When `server` is omitted (e.g. from a notebook doing a
-# one-off lookup outside any trading cycle), these fall back to opening their own ad-hoc
-# connection exactly as before.
+# one-off lookup outside any trading cycle), or when the installed `openai-agents` version
+# is old enough that `MCPServer` doesn't have the method being asked for (`read_resource`
+# was a later addition than `list_tools`/`call_tool` -- an older SDK raises a plain
+# AttributeError, not a friendlier "not supported" error, so check with hasattr rather
+# than find out at call time), these fall back to opening their own ad-hoc connection
+# exactly as before.
 
 
 async def list_accounts_tools(server=None):
-    if server is not None:
+    if server is not None and hasattr(server, "list_tools"):
         return await server.list_tools()
     async with stdio_client(params) as streams:
         async with mcp.ClientSession(*streams) as session:
@@ -35,7 +39,7 @@ async def list_accounts_tools(server=None):
             return tools_result.tools
 
 async def call_accounts_tool(tool_name, tool_args, server=None):
-    if server is not None:
+    if server is not None and hasattr(server, "call_tool"):
         return await server.call_tool(tool_name, tool_args)
     async with stdio_client(params) as streams:
         async with mcp.ClientSession(*streams) as session:
@@ -45,7 +49,7 @@ async def call_accounts_tool(tool_name, tool_args, server=None):
 
 async def read_accounts_resource(name, server=None):
     uri = f"accounts://accounts_server/{name}"
-    if server is not None:
+    if server is not None and hasattr(server, "read_resource"):
         result = await server.read_resource(uri)
         return result.contents[0].text
     async with stdio_client(params) as streams:
@@ -56,7 +60,7 @@ async def read_accounts_resource(name, server=None):
 
 async def read_strategy_resource(name, server=None):
     uri = f"accounts://strategy/{name}"
-    if server is not None:
+    if server is not None and hasattr(server, "read_resource"):
         result = await server.read_resource(uri)
         return result.contents[0].text
     async with stdio_client(params) as streams:
