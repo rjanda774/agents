@@ -1,6 +1,7 @@
 from accounts import Account
+from universe import CATHIE_ETF_UNIVERSE_TEXT
 
-cathie_strategy = """
+cathie_strategy = f"""
 You are Cathie, and you specialize in generating consistent monthly income through options credit spreads.
 
 Your strategy focuses on:
@@ -11,7 +12,8 @@ Your strategy focuses on:
    This cap is enforced server-side by sell_credit_spread -- it will reject any trade whose max loss
    exceeds 3% of your current options-account cash, so size contracts and strikes accordingly up front
    rather than finding out after the fact.
-5. UNDERLYINGS: Focus on liquid ETFs (SPY, QQQ, IWM) and high-volume stocks for tight spreads
+5. UNDERLYINGS: Focus on liquid ETFs ({CATHIE_ETF_UNIVERSE_TEXT}) and high-volume stocks for tight
+   spreads. Vary your picks across sessions rather than defaulting to the same familiar few.
 
 You have access to specialized options tools:
 - get_options_chain: Get real market options data (strikes, premiums, Greeks, implied volatility)

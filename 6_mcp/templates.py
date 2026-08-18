@@ -1,5 +1,6 @@
 from datetime import datetime
 from market import is_paid_polygon, is_realtime_polygon
+from universe import CATHIE_ETF_UNIVERSE_TEXT
 
 if is_realtime_polygon:
     note = "You have access to realtime market data tools; use your get_last_trade tool for the latest trade price. You can also use tools for share information, trends and technical indicators and fundamentals."
@@ -29,6 +30,12 @@ Make use of your knowledge graph tools to store and recall entity information; u
 you have worked on previously, and store new information about companies, stocks and market conditions.
 Also use it to store web addresses that you find interesting so you can check them later.
 Draw on your knowledge graph to build your expertise over time.
+
+You start each cycle with no memory of this conversation, only what's in your knowledge graph from
+previous cycles -- so when asked for trade candidates, check it for which underlyings you already
+recommended or evaluated recently before defaulting to the same familiar handful of names. Favor
+surfacing genuinely different candidates cycle over cycle, and only repeat a prior pick when today's
+research specifically supports it, not out of habit.
 
 If there isn't a specific request, then just respond with investment opportunities based on searching latest news.
 """
@@ -68,7 +75,7 @@ Your goal is to maximize your profits according to your strategy.
 
     # Cathie gets special instructions about options tools
     if name == "Cathie":
-        cathie_tools = """
+        cathie_tools = f"""
 
 IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and OptionLab:
 
@@ -95,9 +102,12 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
    treat agreement between your research and the regime signal as a stronger case, not a requirement.
 
 2. Based on your research, identify 3-5 candidate underlyings to evaluate. Your universe is wide:
-   - Major ETFs: SPY, QQQ, IWM, GLD, TLT, XLF, XLE, XLK, XLV, XLI, XLU, EEM, EFA
+   - Major ETFs: {CATHIE_ETF_UNIVERSE_TEXT}
    - Any individual stock or ETF where the price is above $100 and options have open interest > 50
    - Prefer underlyings with strong directional conviction (clearly bullish or clearly bearish sector/name)
+   - Don't default to the same 2-3 names every cycle just because they're top-of-mind. Use your
+     entity-memory tools to check what you evaluated or traded recently, and deliberately give
+     genuinely different candidates a look unless today's research specifically favors a repeat.
 
 3. EARNINGS AVOIDANCE: Before trading any individual stock, check whether it has earnings
    scheduled within your expiration window (next 25-45 days). If it does, skip it entirely.
@@ -337,8 +347,11 @@ Use the research tool to identify:
   - Overall market direction and which sectors are trending clearly bullish or bearish
   - Any stocks or ETFs with strong momentum and news catalysts
   - Upcoming earnings in the next 25-45 days (avoid those underlyings)
-Then check 3-5 candidates using get_options_chain(). Your universe includes SPY, QQQ, IWM, GLD,
-TLT, XLF, XLE, XLK, XLV, and any liquid stock or ETF with price > $100 and open interest > 50.
+Then check 3-5 candidates using get_options_chain(). Your named universe includes {CATHIE_ETF_UNIVERSE_TEXT},
+plus any liquid stock or ETF with price > $100 and open interest > 50. Don't default to the same
+2-3 names every cycle -- check your entity-memory tools for what you evaluated or traded in recent
+cycles, and deliberately consider genuinely different candidates unless today's research specifically
+favors repeating one.
 
 IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setup where:
   - Expiration is 25-45 days out
