@@ -244,21 +244,35 @@ class Trader:
         self.do_trade = not self.do_trade
 
         # Record a portfolio-value data point after every run, not just on trades,
-        # so the dashboard chart reflects price movement between trades too.
-        account = Account.get(self.name)
-        if self.name in TRADERS_WITH_OPTIONS_TOOL:
-            # Options traders' real capital lives entirely in their separate cathie_options
-            # pseudo-account -- the stock Account above is a second, untouched $10,000 pool
-            # they never actually trade (see CLAUDE.md), so calculate_portfolio_value() on it
-            # is always flat, and blending its starting balance in on top of options cash
-            # would double-count capital and not match the "Cash: $X" figure the dashboard
-            # already shows. Track live options cash directly instead; still stored on the
-            # stock Account's own time series field so app.py's chart plumbing is untouched.
-            options_data = read_account(f"{self.name.lower()}_options")
-            portfolio_value = options_data.get("cash", 10_000.0) if options_data else 10_000.0
-        else:
-            portfolio_value = account.calculate_portfolio_value()
-        account.portfolio_value_time_series.append(
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), portfolio_value)
-        )
-        account.save()
+        # so the dashboard chart reflects price movement between trades too. In its own
+        # try/except, separate from run_with_trace's above -- this whole block does raw
+        # SQLite I/O (Account.get/read_account/account.save, all via database.py) with no
+        # guard of its own, unlike everything inside run_with_trace which is already
+        # covered by the try/except above. It runs unconditionally after every cycle, for
+        # every trader, so an uncaught exception here -- e.g. "database is locked" from
+        # app.py's dashboard reading the same accounts.db concurrently, or any other
+        # transient disk/DB hiccup -- would propagate out of run() uncaught, through
+        # asyncio.gather in trading_floor.py's scheduler loop, and kill the entire process
+        # permanently, the same failure mode market.py's is_market_open() had. This is a
+        # best-effort chart data point, not core trading logic, so it's safe to skip on
+        # failure rather than let it take the whole floor down.
+        try:
+            account = Account.get(self.name)
+            if self.name in TRADERS_WITH_OPTIONS_TOOL:
+                # Options traders' real capital lives entirely in their separate cathie_options
+                # pseudo-account -- the stock Account above is a second, untouched $10,000 pool
+                # they never actually trade (see CLAUDE.md), so calculate_portfolio_value() on it
+                # is always flat, and blending its starting balance in on top of options cash
+                # would double-count capital and not match the "Cash: $X" figure the dashboard
+                # already shows. Track live options cash directly instead; still stored on the
+                # stock Account's own time series field so app.py's chart plumbing is untouched.
+                options_data = read_account(f"{self.name.lower()}_options")
+                portfolio_value = options_data.get("cash", 10_000.0) if options_data else 10_000.0
+            else:
+                portfolio_value = account.calculate_portfolio_value()
+            account.portfolio_value_time_series.append(
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), portfolio_value)
+            )
+            account.save()
+        except Exception as e:
+            print(f"{self.name}: failed to record portfolio-value data point: {e}")
