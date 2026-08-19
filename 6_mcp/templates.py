@@ -153,18 +153,18 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 - MINIMUM PREMIUM RULE (non-negotiable, server-enforced): net premium collected must be at least
   $100.00 total for the trade. sell_credit_spread will reject anything below that.
 - DELTA RULE (non-negotiable, server-enforced): the short leg's delta magnitude must be
-  UNDER 0.15. sell_credit_spread computes real delta via Black-Scholes and rejects the
+  UNDER 0.20. sell_credit_spread computes real delta via Black-Scholes and rejects the
   trade outright if it's breached -- this used to be prompt-only and unenforceable (delta
   was never actually available to check), so verify it yourself up front rather than
   finding out after the fact.
   - Put deltas are NEGATIVE. For bull_put, that means short_strike's delta must be BETWEEN
-    -0.15 and 0 (e.g. -0.08 is fine, -0.20 is NOT -- it's more negative, i.e. larger
+    -0.20 and 0 (e.g. -0.12 is fine, -0.25 is NOT -- it's more negative, i.e. larger
     magnitude, i.e. too close to the money).
   - Call deltas are POSITIVE. For bear_call, short_strike's delta must be BETWEEN 0 and
-    0.15 (e.g. 0.08 is fine, 0.20 is NOT).
+    0.20 (e.g. 0.12 is fine, 0.25 is NOT).
   - Delta is now shown in the get_options_chain results for every strike (computed via
     Black-Scholes, not a raw yfinance field) -- always check it before selecting strikes.
-  - If no strike has |delta| under 0.15, go further OTM until you find one. Do NOT
+  - If no strike has |delta| under 0.20, go further OTM until you find one. Do NOT
     compromise on this -- it directly controls how likely the position is to end up
     in-the-money.
 - long_strike = short_strike - $5 (bull_put) or short_strike + $5 (bear_call)
@@ -177,7 +177,8 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 - Bear Call Spread (BEARISH/NEUTRAL): Sell lower call, buy higher call -> Collect premium if stock stays down
 - Max Profit = Premium collected (spreads expire worthless)
 - Max Loss = Spread width - Premium (stock moves through both strikes)
-- Target: 25-45 days to expiration, short leg |delta| under 0.15 (=> ~80-85%+ PoP)
+- Target: 25-45 days to expiration, short leg |delta| under 0.20 (=> roughly 75-85%+ PoP,
+  depending how close to the cap the strike sits)
 
 **Position Management - YOU MUST DO THIS FIRST, EVERY SINGLE RUN:**
 
@@ -355,7 +356,7 @@ favors repeating one.
 
 IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setup where:
   - Expiration is 25-45 days out
-  - Short leg |delta| is under 0.15
+  - Short leg |delta| is under 0.20
   - PoP >= 65%
   - Net premium >= $100.00
   - No earnings in the window
