@@ -4,7 +4,7 @@ Uses yfinance for FREE real options data
 Uses OptionLab for credit spread analysis
 Completely separate from stock trading system
 """
-from mcp.server.fastmcp import FastMCP  # type: ignore
+from mcp_compat import FastMCP  # type: ignore
 from datetime import datetime, timedelta
 from typing import Dict, List
 import json

@@ -1,4 +1,4 @@
-from mcp.server.fastmcp import FastMCP
+from mcp_compat import FastMCP
 from regime_signal import get_regime_signal
 
 mcp = FastMCP("regime_server")

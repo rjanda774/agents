@@ -1,4 +1,4 @@
-from mcp.server.fastmcp import FastMCP
+from mcp_compat import FastMCP
 from market import get_share_price
 
 mcp = FastMCP("market_server")

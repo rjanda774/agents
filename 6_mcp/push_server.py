@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 import requests
 from pydantic import BaseModel, Field
-from mcp.server.fastmcp import FastMCP
+from mcp_compat import FastMCP
 
 load_dotenv(override=True)
 
