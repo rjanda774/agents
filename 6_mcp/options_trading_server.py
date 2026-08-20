@@ -10,6 +10,7 @@ from typing import Dict, List
 import json
 import sys
 import os
+import math
 import concurrent.futures
 from pathlib import Path
 
@@ -239,6 +240,24 @@ async def analyze_credit_spread(
         short_premium = (short_row.iloc[0]['bid'] + short_row.iloc[0]['ask']) / 2
         long_premium  = (long_row.iloc[0]['bid']  + long_row.iloc[0]['ask'])  / 2
         iv = float(short_row.iloc[0]['impliedVolatility'])
+
+        # Guard: NaN premium/IV means yfinance has no real quote at all for one of these
+        # legs (distinct from an explicit 0/0 quote, which the checks below already
+        # catch). This matters because every comparison against NaN is False in Python --
+        # `nan <= 0.01` and `nan <= 0.001` are both False -- so a NaN silently sails past
+        # every guard below it and gets handed straight to optionlab's Inputs model as
+        # `premium=nan`. optionlab's `strategy` field is a discriminated union
+        # (Stock | Option | ClosedPosition); pydantic then fails to match the leg dict
+        # against any variant and dumps 8 unrelated-looking errors instead of a clear
+        # message (only "Option.premium ... Input should be greater than 0 [input_value=nan]"
+        # in the middle of that blob is the actual signal). Catch it here explicitly so
+        # this reads as a normal "no market data" error like the rest of this function.
+        if math.isnan(short_premium) or math.isnan(long_premium) or math.isnan(iv):
+            return json.dumps({
+                "error": f"No market data (NaN bid/ask/IV) for {symbol} {short_strike}/{long_strike} "
+                         f"on {expiration_date}. This strike/expiration combination has no active "
+                         f"quote right now -- try a different strike or a different underlying."
+            })
 
         # Guard: zero or near-zero premium means the option is illiquid or too far OTM
         if short_premium <= 0.01:
