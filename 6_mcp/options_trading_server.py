@@ -667,12 +667,26 @@ async def close_credit_spread(
             long_row  = df[df['strike'] == long_strike]
 
             if not short_row.empty and not long_row.empty:
-                # Cost to close = buy back short + sell back long
-                short_ask = (short_row.iloc[0]['bid'] + short_row.iloc[0]['ask']) / 2
-                long_bid  = (long_row.iloc[0]['bid']  + long_row.iloc[0]['ask'])  / 2
-                closing_cost = (short_ask - long_bid) * 100 * position.short_leg.contracts
-                price_source = "live market"
-                market_data_available = True
+                short_bid_q, short_ask_q = float(short_row.iloc[0]['bid']), float(short_row.iloc[0]['ask'])
+                long_bid_q,  long_ask_q  = float(long_row.iloc[0]['bid']),  float(long_row.iloc[0]['ask'])
+
+                # Guard: a 0/0 bid-ask on a leg is not a real quote, it's yfinance's way of
+                # saying no market maker has an active price right now -- routinely true
+                # outside regular trading hours, or for a thin/deep-OTM strike, not proof the
+                # option is worth nothing. Trusting it as-is silently turned "no live data"
+                # into a fabricated $0.00 closing cost, which trivially satisfies the
+                # 75%-captured profit rule below and force-closes a position that was never
+                # actually verified against a real price. Require at least one nonzero side
+                # on each leg before treating this as a usable quote; otherwise fall through
+                # to the existing (correct) "no market data" handling below, which assumes
+                # breakeven rather than fabricating a gain.
+                if (short_bid_q > 0 or short_ask_q > 0) and (long_bid_q > 0 or long_ask_q > 0):
+                    # Cost to close = buy back short + sell back long
+                    short_ask = (short_bid_q + short_ask_q) / 2
+                    long_bid  = (long_bid_q  + long_ask_q)  / 2
+                    closing_cost = (short_ask - long_bid) * 100 * position.short_leg.contracts
+                    price_source = "live market"
+                    market_data_available = True
         except Exception:
             pass  # handled below -- no fabricated "estimate", we just don't have data
 
