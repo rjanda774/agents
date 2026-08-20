@@ -75,17 +75,23 @@ def compute_daily_states(closes: list[float]) -> list[str]:
     return states
 
 
-def build_transition_matrix(states: list[str], stride: int = STRIDE_DAYS) -> tuple[np.ndarray, int]:
-    """Fit the transition matrix from non-overlapping samples (avoids pseudo-replication)."""
+def build_transition_matrix(states: list[str], stride: int = STRIDE_DAYS) -> tuple[np.ndarray, int, np.ndarray]:
+    """Fit the transition matrix from non-overlapping samples (avoids pseudo-replication).
+
+    Also returns per-row sample counts (transitions observed FROM each state) so callers
+    can detect a state that was never sampled as a source -- its row is all zeros, which
+    is a stochastic-matrix violation (persistence would read as a misleading "0.0" instead
+    of "no data", and matrix_power on that row produces a forecast that doesn't sum to 1).
+    """
     sampled = states[::stride]
     idx = {s: i for i, s in enumerate(STATES)}
     counts = np.zeros((3, 3))
     for a, b in zip(sampled, sampled[1:]):
         counts[idx[a]][idx[b]] += 1
     sample_count = int(counts.sum())
-    row_sums = counts.sum(axis=1, keepdims=True)
-    matrix = np.divide(counts, row_sums, out=np.zeros_like(counts), where=row_sums != 0)
-    return matrix, sample_count
+    row_sums = counts.sum(axis=1)
+    matrix = np.divide(counts, row_sums[:, None], out=np.zeros_like(counts), where=row_sums[:, None] != 0)
+    return matrix, sample_count, row_sums
 
 
 def forecast(matrix: np.ndarray, current_state: str, days_ahead: int) -> dict[str, float]:
@@ -122,8 +128,31 @@ def get_regime_signal(symbol: str, lookback_years: int = 8) -> dict:
     states = compute_daily_states(closes)
     current_state = states[-1]
 
-    matrix, sample_count = build_transition_matrix(states)
-    persistence = matrix[STATES.index(current_state)][STATES.index(current_state)]
+    matrix, sample_count, row_sums = build_transition_matrix(states)
+    current_idx = STATES.index(current_state)
+
+    # Guard: today's regime never occurred as a SOURCE state among the strided samples
+    # used to fit the matrix, so its row is all zeros. Reporting persistence=0.0 from
+    # that row would misleadingly read as "this regime never repeats" instead of the
+    # true "we have zero samples of transitions from this regime", and matrix_power on
+    # an all-zero row produces a forecast that doesn't sum to 1. Refuse instead of
+    # guessing, consistent with the overall MIN_HISTORY_DAYS refusal above.
+    if row_sums[current_idx] == 0:
+        return {
+            "symbol": symbol,
+            "current_regime": current_state,
+            "regime_basis": f"trailing {LOOKBACK_DAYS}-trading-day cumulative return (this is a LAGGING label)",
+            "error": (
+                f"Today's regime ({current_state}) never occurred as a starting state in the "
+                f"non-overlapping samples used to fit the transition matrix ({sample_count} total "
+                f"transitions sampled). Cannot estimate persistence or forecast future regimes "
+                f"from a state with zero observed transitions -- refusing to guess rather than "
+                f"report a fabricated 0% persistence or an invalid forecast."
+            ),
+            "transition_matrix_sample_size": sample_count,
+        }
+
+    persistence = matrix[current_idx][current_idx]
 
     return {
         "symbol": symbol,
