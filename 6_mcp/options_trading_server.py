@@ -246,7 +246,7 @@ async def analyze_credit_spread(
                 "error": f"Short strike {short_strike} has zero or negligible premium (${short_premium:.4f}). "
                          f"This strike is too far out-of-the-money or illiquid. "
                          f"Move the short strike closer to the current price (${current_price:.2f}) until premium > $0.05. "
-                         f"Try a strike with delta closer to 0.25."
+                         f"Try a strike with delta closer to 0.15."
             })
         if long_premium <= 0.0:
             # Long leg with zero premium is fine to use $0.01 as floor — it's just cheap protection
@@ -453,12 +453,15 @@ async def sell_credit_spread(
         long_premium_per  = float(analysis['premium']['long_leg'])
         short_leg_delta = analysis.get('greeks', {}).get('short_leg_delta')
 
-        # HARD ENFORCEMENT: short leg must be genuinely far OTM (|delta| < 0.15). The prompt
+        # HARD ENFORCEMENT: short leg must be genuinely far OTM (|delta| < 0.20). The prompt
         # has asked for a delta band all along, but get_options_chain never actually returned
         # real delta (yfinance's raw chain has no delta column at all -- that check was
         # silently unenforceable), which let strikes close to or even in-the-money through.
         # Real delta is now computed via Black-Scholes in both get_options_chain and here.
-        MAX_SHORT_DELTA = 0.15
+        # Cap raised from 0.15 to 0.20 to qualify more candidate strikes -- accepted
+        # tradeoff: strikes this close to the money carry a somewhat higher
+        # assignment/breach probability and a lower win rate than under the old cap.
+        MAX_SHORT_DELTA = 0.20
         if short_leg_delta is None:
             return json.dumps({
                 "error": "TRADE REJECTED: could not compute short leg delta (missing/zero implied "
