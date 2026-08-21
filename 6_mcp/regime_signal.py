@@ -114,7 +114,24 @@ def get_regime_signal(symbol: str, lookback_years: int = 8) -> dict:
     Returns today's regime, its historical persistence/stickiness, and near-term
     forecasts for `symbol`. This is trend CONTEXT, not a buy/sell instruction.
     """
-    closes = get_historical_closes(symbol, lookback_years)
+    # Guard: get_historical_closes hits Polygon's live API and can raise for reasons that
+    # have nothing to do with the symbol -- a missing key, a network blip, or (confirmed
+    # live, see CLAUDE.md) a free-tier key's ~5-calls/minute rate limit tripping mid-cycle
+    # if Cathie checks regime for several candidates back to back. Every other failure mode
+    # in this function returns a clean {"error": ...} dict instead of guessing; letting a
+    # raw urllib3/polygon exception escape here instead would hand the LLM (or whoever
+    # calls get_market_regime) a stack trace instead of an actionable message.
+    try:
+        closes = get_historical_closes(symbol, lookback_years)
+    except Exception as e:
+        return {
+            "symbol": symbol,
+            "error": (
+                f"Could not fetch price history for {symbol}: {e}. Often transient (a "
+                "free-tier Polygon key's rate limit, or a network blip) -- wait a moment "
+                "and try again, or try a different symbol."
+            ),
+        }
     if len(closes) < MIN_HISTORY_DAYS:
         return {
             "symbol": symbol,
