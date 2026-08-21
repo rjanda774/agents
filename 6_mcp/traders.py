@@ -43,8 +43,11 @@ MAX_TURNS = 30
 # Splitting means each half gets its own budget, and one running long doesn't cost the other
 # its progress. Position review is the lighter half (bounded by how many open positions
 # exist); new-trade search is the heavier half (bounded by how many candidates get evaluated).
+# Bumped 45 -> 55: templates.py now makes get_stock_screener (once/cycle) and get_market_regime
+# (once per candidate) mandatory rather than optional, adding ~2 turns each on top of the
+# original per-candidate budget.
 CLOSE_PASS_MAX_TURNS = 20
-TRADE_PASS_MAX_TURNS = 45
+TRADE_PASS_MAX_TURNS = 55
 
 openrouter_client = AsyncOpenAI(base_url=OPENROUTER_BASE_URL, api_key=openrouter_api_key)
 deepseek_client = AsyncOpenAI(base_url=DEEPSEEK_BASE_URL, api_key=deepseek_api_key)

@@ -103,15 +103,20 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
    - Which sectors are showing clear directional momentum right now?
    - Are there any scheduled events in the next 25-45 days (Fed meetings, earnings, economic data)?
    - Search specifically for stocks and ETFs with strong recent news or technical setups.
-   Optionally cross-check your directional read with get_market_regime on your top candidates --
-   treat agreement between your research and the regime signal as a stronger case, not a requirement.
+   MANDATORY: once you have a shortlist, call get_market_regime on each candidate before you
+   finalize its directional bias. This is a required call, not an optional cross-check -- it
+   takes one call per candidate. Note explicitly whether the regime signal agrees or conflicts
+   with your news research; a conflict is a reason for more scrutiny, not automatic disqualification.
 
 2. Based on your research, identify 3-5 candidate underlyings to evaluate. Your universe is wide:
    - Major ETFs: {CATHIE_ETF_UNIVERSE_TEXT}
    - Any individual stock or ETF where the price is above $100 and options have open interest > 50
-   - Call get_stock_screener to pull in fresh, liquid names beyond that named list -- especially
-     useful when your recent candidates keep repeating. Its results are unverified until you run
-     them through get_options_chain, same as any other candidate.
+   - MANDATORY: call get_stock_screener at least once this cycle (any query -- pick whichever
+     fits your read of the market) before you finalize your candidate list, even if your
+     research already turned up names you like. This is a required call every cycle, not a
+     fallback for when you're stuck -- it's how you find names outside your named ETF universe.
+     Its results are unverified until you run them through get_options_chain, same as any
+     other candidate.
    - Prefer underlyings with strong directional conviction (clearly bullish or clearly bearish sector/name)
    - Don't default to the same 2-3 names every cycle just because they're top-of-mind. Use your
      entity-memory tools to check what you evaluated or traded recently, and deliberately give
@@ -356,12 +361,18 @@ Use the research tool to identify:
   - Overall market direction and which sectors are trending clearly bullish or bearish
   - Any stocks or ETFs with strong momentum and news catalysts
   - Upcoming earnings in the next 25-45 days (avoid those underlyings)
+
+MANDATORY TOOL CALLS THIS CYCLE (do not skip these, even if your research already looks sufficient):
+  - Call get_stock_screener at least once (any query) before finalizing your candidate list --
+    it's your check for names outside the named ETF universe, not a fallback for when you're stuck.
+  - Call get_market_regime on each candidate you seriously consider, before you settle on a
+    directional bias for it. Note whether it agrees or conflicts with your news research.
+
 Then check 3-5 candidates using get_options_chain(). Your named universe includes {CATHIE_ETF_UNIVERSE_TEXT},
-plus any liquid stock or ETF with price > $100 and open interest > 50 -- call get_stock_screener for
-a fresh list of actively-traded names if you want to look beyond that. Don't default to the same
-2-3 names every cycle -- check your entity-memory tools for what you evaluated or traded in recent
-cycles, and deliberately consider genuinely different candidates unless today's research specifically
-favors repeating one.
+plus any liquid stock or ETF with price > $100 and open interest > 50, plus whatever get_stock_screener
+just returned. Don't default to the same 2-3 names every cycle -- check your entity-memory tools for
+what you evaluated or traded in recent cycles, and deliberately consider genuinely different candidates
+unless today's research specifically favors repeating one.
 
 IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setup where:
   - Expiration is 25-45 days out

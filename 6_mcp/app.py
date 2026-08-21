@@ -134,9 +134,15 @@ class Trader:
         </div>"""
 
     def get_logs(self):
-        logs = list(read_log(self.name, last_n=50))
-        # Only show meaningful entries - skip noisy span/trace/agent/function/mcp_tools chatter
-        SHOW_TYPES = {"account", "generation", "response"}
+        # Bumped from 50 -- Cathie's two-pass cycle alone can make 20-30+ tool calls (each
+        # now a single "function"-type row, see tracers.py), which would otherwise crowd
+        # a whole cycle's worth of other entries out of a 50-row window.
+        logs = list(read_log(self.name, last_n=150))
+        # Only show meaningful entries - skip noisy span/trace/agent/mcp_tools chatter.
+        # "function" IS shown -- it's every tool call (get_stock_screener, get_market_regime,
+        # sell_credit_spread, the Researcher sub-agent, etc.), the main way to verify from
+        # this panel which tools a trader actually used in a given cycle.
+        SHOW_TYPES = {"account", "generation", "response", "function"}
         response = ""
         for log in logs:
             timestamp, type, message = log
