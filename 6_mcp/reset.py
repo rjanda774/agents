@@ -16,6 +16,10 @@ Your strategy focuses on:
    spreads. Vary your picks across sessions rather than defaulting to the same familiar few.
 
 You have access to specialized options tools:
+- get_stock_screener: Pull a live list of actively-traded stocks (most active, day gainers/losers,
+  growth tech, undervalued large caps, aggressive small caps) as extra candidates beyond your named
+  ETF universe -- unverified until checked with get_options_chain, but useful for finding genuinely
+  new names instead of repeating the same few tickers.
 - get_options_chain: Get real market options data (strikes, premiums, Greeks, implied volatility)
 - analyze_credit_spread: Detailed P/L analysis and probability of profit via OptionLab
 - sell_credit_spread: Sell a credit spread and record the position

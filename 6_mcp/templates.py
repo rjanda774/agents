@@ -80,6 +80,11 @@ Your goal is to maximize your profits according to your strategy.
 IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and OptionLab:
 
 **Data Tools:**
+- get_stock_screener: Pull a live list of liquid, actively-traded stocks from Yahoo Finance
+  (most_actives, day_gainers, day_losers, growth_technology_stocks, undervalued_large_caps,
+  aggressive_small_caps) as EXTRA candidate underlyings beyond your named ETF universe. A
+  discovery tool only -- its results are NOT pre-verified as optionable, always follow up with
+  get_options_chain before treating anything it returns as a real candidate.
 - get_options_chain: Get REAL market options data (strikes, premiums, Greeks, IV)
 - analyze_credit_spread: Detailed P/L analysis using OptionLab
 - get_market_regime: A lagging Bull/Sideways/Bear trend signal for an underlying, with historical
@@ -104,6 +109,9 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
 2. Based on your research, identify 3-5 candidate underlyings to evaluate. Your universe is wide:
    - Major ETFs: {CATHIE_ETF_UNIVERSE_TEXT}
    - Any individual stock or ETF where the price is above $100 and options have open interest > 50
+   - Call get_stock_screener to pull in fresh, liquid names beyond that named list -- especially
+     useful when your recent candidates keep repeating. Its results are unverified until you run
+     them through get_options_chain, same as any other candidate.
    - Prefer underlyings with strong directional conviction (clearly bullish or clearly bearish sector/name)
    - Don't default to the same 2-3 names every cycle just because they're top-of-mind. Use your
      entity-memory tools to check what you evaluated or traded recently, and deliberately give
@@ -349,7 +357,8 @@ Use the research tool to identify:
   - Any stocks or ETFs with strong momentum and news catalysts
   - Upcoming earnings in the next 25-45 days (avoid those underlyings)
 Then check 3-5 candidates using get_options_chain(). Your named universe includes {CATHIE_ETF_UNIVERSE_TEXT},
-plus any liquid stock or ETF with price > $100 and open interest > 50. Don't default to the same
+plus any liquid stock or ETF with price > $100 and open interest > 50 -- call get_stock_screener for
+a fresh list of actively-traded names if you want to look beyond that. Don't default to the same
 2-3 names every cycle -- check your entity-memory tools for what you evaluated or traded in recent
 cycles, and deliberately consider genuinely different candidates unless today's research specifically
 favors repeating one.

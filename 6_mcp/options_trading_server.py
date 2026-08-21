@@ -30,6 +30,110 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 mcp = FastMCP("options_trading_server")
 
+# Screens chosen for likely options liquidity -- Yahoo's screener has ~19 predefined
+# queries total (see yfinance.PREDEFINED_SCREENER_QUERIES), most of which are mutual
+# fund/ETF category screens irrelevant here. This is the subset of equity screens
+# whose filters (market cap, day volume, etc.) tend to surface names that actually have
+# tight, liquid options markets -- small_cap_gainers/most_shorted_stocks and the fund/
+# ETF screens are deliberately left out since thin or non-existent options chains are
+# common there. Still just a starting list, same as CATHIE_ETF_UNIVERSE -- results are
+# unverified until checked with get_options_chain.
+SCREENER_QUERIES = {
+    "most_actives",
+    "day_gainers",
+    "day_losers",
+    "growth_technology_stocks",
+    "undervalued_large_caps",
+    "aggressive_small_caps",
+}
+
+
+@mcp.tool()
+async def get_stock_screener(query: str = "most_actives", count: int = 15) -> str:
+    """Screen for liquid, actively-traded stocks as extra credit-spread candidates,
+    beyond the named ETF universe.
+
+    Pulls live results from Yahoo Finance's screener (via yfinance.screen). Use this
+    to widen candidate discovery beyond the named ETF universe and whatever the
+    research tool happened to surface -- especially useful for finding genuinely
+    different names cycle over cycle instead of converging on the same handful.
+
+    This is a discovery tool only: results are NOT pre-verified as optionable. Always
+    follow up with get_options_chain(symbol) for any candidate you're seriously
+    considering, to confirm it actually has listed options in the 25-45 day window
+    with real open interest -- plenty of liquid stocks still have thin or no options
+    market.
+
+    Args:
+        query: which screen to run. One of:
+            "most_actives" (default) -- highest day-volume large/mid caps, the safest
+                bet for a liquid options market.
+            "day_gainers" / "day_losers" -- today's biggest movers (%>3 up / %>2.5 down),
+                useful for picking directional bias off of momentum.
+            "growth_technology_stocks" -- high revenue/EPS growth tech names.
+            "undervalued_large_caps" -- low P/E, low PEG large caps.
+            "aggressive_small_caps" -- higher-volume small caps; options liquidity is
+                less reliable here than the others, double-check open interest.
+        count: how many results to return (1-50, default 15).
+
+    Returns:
+        JSON list of candidates (symbol, name, price, day % change, volume), or an
+        "error" key if the screener request itself failed -- fall back to the named
+        ETF universe and your own research in that case.
+    """
+    if query not in SCREENER_QUERIES:
+        return json.dumps(
+            {"error": f"Unknown query '{query}'. Choose one of: {sorted(SCREENER_QUERIES)}"}
+        )
+    count = max(1, min(count, 50))
+
+    try:
+        import yfinance as yf
+
+        def _fetch():
+            return yf.screen(query, count=count)
+
+        result = fetch_with_timeout(_fetch, timeout_seconds=30)
+    except Exception as e:
+        return json.dumps(
+            {
+                "error": f"Screener request failed: {e}. Fall back to your named ETF "
+                "universe and your own research for candidates this cycle instead."
+            }
+        )
+
+    quotes = result.get("quotes", []) if isinstance(result, dict) else []
+    candidates = []
+    for q in quotes:
+        symbol = q.get("symbol")
+        if not symbol:
+            continue
+        candidates.append(
+            {
+                "symbol": symbol,
+                "name": q.get("shortName") or q.get("longName"),
+                "price": q.get("regularMarketPrice"),
+                "day_change_pct": q.get("regularMarketChangePercent"),
+                "volume": q.get("regularMarketVolume"),
+                "avg_volume_3m": q.get("averageDailyVolume3Month"),
+                "market_cap": q.get("marketCap"),
+            }
+        )
+
+    return json.dumps(
+        {
+            "query": query,
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+            "note": (
+                "Unverified candidates -- call get_options_chain(symbol) before treating "
+                "any of these as a real trade candidate."
+            ),
+        },
+        indent=2,
+        default=str,
+    )
+
 
 @mcp.tool()
 async def get_options_chain(
