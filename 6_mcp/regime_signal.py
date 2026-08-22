@@ -30,6 +30,8 @@ import numpy as np
 from dotenv import load_dotenv
 from polygon import RESTClient
 
+from market import _polygon_rate_limited_call
+
 load_dotenv(override=True)
 
 polygon_api_key = os.getenv("POLYGON_API_KEY")
@@ -53,7 +55,15 @@ def get_historical_closes(symbol: str, lookback_years: int = 8) -> list[float]:
     client = RESTClient(polygon_api_key)
     end = datetime.now().date()
     start = end - timedelta(days=365 * lookback_years)
-    aggs = client.get_aggs(symbol, 1, "day", start.isoformat(), end.isoformat(), adjusted=True, limit=50000)
+    # Routed through market.py's shared rate limiter -- this used to call client.get_aggs()
+    # directly, uncoordinated with every other Polygon call in the process (is_market_open,
+    # share-price lookups, etc.), all sharing the same free-tier 5-requests/minute budget.
+    # That was always a latent race, but templates.py now calls get_market_regime up to once
+    # per candidate (see trader_instructions/new_trades_message), which was enough to reliably
+    # blow through the limit and 429 instead of queueing behind it like every other caller does.
+    def _call():
+        return client.get_aggs(symbol, 1, "day", start.isoformat(), end.isoformat(), adjusted=True, limit=50000)
+    aggs = _polygon_rate_limited_call(_call)
     return [a.close for a in aggs]
 
 
