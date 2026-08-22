@@ -48,8 +48,14 @@ SCREENER_QUERIES = {
 }
 
 
+# Yahoo's screener API hard-caps a single request's result count at 250 (yfinance raises
+# ValueError above this) -- there is no further pagination support in yfinance.screen(),
+# so 250 is also the most "all the tickers on this screener" can mean here in one call.
+SCREENER_MAX_COUNT = 250
+
+
 @mcp.tool()
-async def get_stock_screener(query: str = "most_actives", count: int = 15) -> str:
+async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_MAX_COUNT) -> str:
     """Screen for liquid, actively-traded stocks as extra credit-spread candidates,
     beyond the named ETF universe.
 
@@ -57,6 +63,8 @@ async def get_stock_screener(query: str = "most_actives", count: int = 15) -> st
     to widen candidate discovery beyond the named ETF universe and whatever the
     research tool happened to surface -- especially useful for finding genuinely
     different names cycle over cycle instead of converging on the same handful.
+    Defaults to returning the full result set (up to Yahoo's 250-per-request cap) --
+    don't pass a small `count` unless you specifically want fewer.
 
     This is a discovery tool only: results are NOT pre-verified as optionable. Always
     follow up with get_options_chain(symbol) for any candidate you're seriously
@@ -74,18 +82,22 @@ async def get_stock_screener(query: str = "most_actives", count: int = 15) -> st
             "undervalued_large_caps" -- low P/E, low PEG large caps.
             "aggressive_small_caps" -- higher-volume small caps; options liquidity is
                 less reliable here than the others, double-check open interest.
-        count: how many results to return (1-50, default 15).
+        count: how many results to return (1-250, default 250 -- Yahoo's per-request max,
+            i.e. everything this screen has to offer in one call).
 
     Returns:
         JSON list of candidates (symbol, name, price, day % change, volume), or an
         "error" key if the screener request itself failed -- fall back to the named
-        ETF universe and your own research in that case.
+        ETF universe and your own research in that case. Includes `total_matches` (how
+        many stocks match this screen at Yahoo, which can exceed 250) alongside
+        `candidate_count` (how many were actually returned) so you can tell whether this
+        call already covers the full screen.
     """
     if query not in SCREENER_QUERIES:
         return json.dumps(
             {"error": f"Unknown query '{query}'. Choose one of: {sorted(SCREENER_QUERIES)}"}
         )
-    count = max(1, min(count, 50))
+    count = max(1, min(count, SCREENER_MAX_COUNT))
 
     try:
         import yfinance as yf
@@ -103,6 +115,7 @@ async def get_stock_screener(query: str = "most_actives", count: int = 15) -> st
         )
 
     quotes = result.get("quotes", []) if isinstance(result, dict) else []
+    total_matches = result.get("total") if isinstance(result, dict) else None
     candidates = []
     for q in quotes:
         symbol = q.get("symbol")
@@ -123,11 +136,19 @@ async def get_stock_screener(query: str = "most_actives", count: int = 15) -> st
     return json.dumps(
         {
             "query": query,
+            "total_matches": total_matches,
             "candidate_count": len(candidates),
             "candidates": candidates,
             "note": (
                 "Unverified candidates -- call get_options_chain(symbol) before treating "
                 "any of these as a real trade candidate."
+                + (
+                    f" NOTE: total_matches ({total_matches}) exceeds the {SCREENER_MAX_COUNT} "
+                    "results returned -- this screen has more candidates than a single call "
+                    "can return; treat this as a large but partial list, not the full screen."
+                    if isinstance(total_matches, int) and total_matches > len(candidates)
+                    else ""
+                )
             ),
         },
         indent=2,
@@ -586,7 +607,10 @@ async def sell_credit_spread(
         # asked for this all along, but it's been observed slipping through in practice
         # (e.g. a live $69.50 and $18.50 trade both under the stated $100 floor) -- prompt
         # instructions aren't reliable enough on their own, so enforce it here too.
-        MIN_NET_PREMIUM = 100.0
+        # Lowered 100 -> 50 -- the $100 floor combined with the 25-45 DTE/delta<0.20/3%-cash
+        # gates was plausibly excluding too many otherwise-valid trades on a $10k account,
+        # contributing to very low trade frequency. $50 still rules out trading for pennies.
+        MIN_NET_PREMIUM = 50.0
         if net_premium < MIN_NET_PREMIUM:
             return json.dumps({
                 "error": (
@@ -597,20 +621,35 @@ async def sell_credit_spread(
                 )
             })
 
-        # HARD ENFORCEMENT: never risk more than 3% of available cash on a single trade.
-        # Checked against current cash, not cash-after-this-trade's-premium -- what you'd
-        # actually have to cover the max loss from is what you have going in.
-        MAX_RISK_PCT = 0.03
-        max_allowed_risk = options_account.cash * MAX_RISK_PCT
+        # HARD ENFORCEMENT: never risk more than 8% of available cash on a single trade,
+        # AND never risk more than 5x the premium actually collected for that trade --
+        # both must hold, so the effective cap is whichever of the two is smaller. Raised
+        # from a flat 3%-of-cash cap (no premium-ratio check existed before) after low
+        # trade frequency suggested 3% was too tight to clear on a $10k account for most
+        # otherwise-valid setups; the added 5x-premium check keeps a thin-premium trade
+        # from using the full 8% anyway, since a bigger cash cushion alone doesn't make a
+        # weak risk/reward trade sound. Checked against current cash, not
+        # cash-after-this-trade's-premium -- what you'd actually have to cover the max
+        # loss from is what you have going in.
+        MAX_RISK_PCT = 0.08
+        MAX_RISK_TO_PREMIUM_RATIO = 5.0
+        max_allowed_risk_pct = options_account.cash * MAX_RISK_PCT
+        max_allowed_risk_premium = net_premium * MAX_RISK_TO_PREMIUM_RATIO
+        max_allowed_risk = min(max_allowed_risk_pct, max_allowed_risk_premium)
         if max_loss > max_allowed_risk:
+            limiting_rule = (
+                f"the {MAX_RISK_PCT * 100:.0f}%-of-cash cap "
+                f"({(max_loss / options_account.cash * 100) if options_account.cash else float('inf'):.1f}% "
+                f"of ${options_account.cash:.2f} available)"
+                if max_allowed_risk_pct <= max_allowed_risk_premium
+                else f"the {MAX_RISK_TO_PREMIUM_RATIO:.0f}x-net-premium cap "
+                     f"(net premium collected is only ${net_premium:.2f})"
+            )
             return json.dumps({
                 "error": (
-                    f"TRADE REJECTED: max loss ${max_loss:.2f} would risk "
-                    f"{(max_loss / options_account.cash * 100) if options_account.cash else float('inf'):.1f}% "
-                    f"of available cash (${options_account.cash:.2f}), exceeding the "
-                    f"{MAX_RISK_PCT * 100:.0f}% per-trade cap. Max allowed risk right now is "
-                    f"${max_allowed_risk:.2f}. Reduce `contracts`, pick a narrower spread width, "
-                    f"or choose strikes closer together to lower max loss."
+                    f"TRADE REJECTED: max loss ${max_loss:.2f} exceeds {limiting_rule}. "
+                    f"Max allowed risk right now is ${max_allowed_risk:.2f}. Reduce `contracts`, "
+                    f"pick a narrower spread width, or choose strikes closer together to lower max loss."
                 )
             })
 
