@@ -53,6 +53,18 @@ SCREENER_QUERIES = {
 # so 250 is also the most "all the tickers on this screener" can mean here in one call.
 SCREENER_MAX_COUNT = 250
 
+# HARD FILTER: discard candidates priced under $50 before they're even returned. Observed
+# in practice: aggressive_small_caps has no price floor at all in Yahoo's own filter
+# definition (day_gainers/day_losers only require >= $5), and Cathie was seen opening
+# credit spreads on ~$2 stocks sourced from the screener. That's a bad fit for this
+# strategy regardless of trade frequency -- $5-wide strikes (see long_strike = short_strike
+# +/- $5 in the trading rules) don't make sense against a $2 underlying, and sub-$50 names
+# tend to have wide bid-ask spreads and thin open interest on top of that. The existing
+# ">$100" guidance for individual-stock candidates has always been prompt-only and
+# evidently wasn't enough on its own, so this is enforced here instead, before results
+# ever reach the model.
+MIN_SCREENER_PRICE = 50.0
+
 
 @mcp.tool()
 async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_MAX_COUNT) -> str:
@@ -70,7 +82,10 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
     follow up with get_options_chain(symbol) for any candidate you're seriously
     considering, to confirm it actually has listed options in the 25-45 day window
     with real open interest -- plenty of liquid stocks still have thin or no options
-    market.
+    market. Candidates priced under $50 are already discarded server-side (see
+    MIN_SCREENER_PRICE) -- some screens (e.g. aggressive_small_caps) have no price
+    floor of their own and can otherwise return very low-priced stocks that don't
+    suit this strategy's $5-wide strikes.
 
     Args:
         query: which screen to run. One of:
@@ -90,8 +105,9 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
         "error" key if the screener request itself failed -- fall back to the named
         ETF universe and your own research in that case. Includes `total_matches` (how
         many stocks match this screen at Yahoo, which can exceed 250) alongside
-        `candidate_count` (how many were actually returned) so you can tell whether this
-        call already covers the full screen.
+        `candidate_count` (how many were actually returned, post price-filter) and
+        `filtered_low_price_count` (how many results were discarded for being under
+        $50) so you can tell whether this call already covers the full screen.
     """
     if query not in SCREENER_QUERIES:
         return json.dumps(
@@ -117,15 +133,23 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
     quotes = result.get("quotes", []) if isinstance(result, dict) else []
     total_matches = result.get("total") if isinstance(result, dict) else None
     candidates = []
+    filtered_low_price_count = 0
     for q in quotes:
         symbol = q.get("symbol")
         if not symbol:
+            continue
+        price = q.get("regularMarketPrice")
+        # Discard anything under MIN_SCREENER_PRICE server-side -- including missing/null
+        # price, since we can't confirm it clears the bar. Not just a prompt suggestion:
+        # these never reach the model at all.
+        if price is None or price < MIN_SCREENER_PRICE:
+            filtered_low_price_count += 1
             continue
         candidates.append(
             {
                 "symbol": symbol,
                 "name": q.get("shortName") or q.get("longName"),
-                "price": q.get("regularMarketPrice"),
+                "price": price,
                 "day_change_pct": q.get("regularMarketChangePercent"),
                 "volume": q.get("regularMarketVolume"),
                 "avg_volume_3m": q.get("averageDailyVolume3Month"),
@@ -138,15 +162,17 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
             "query": query,
             "total_matches": total_matches,
             "candidate_count": len(candidates),
+            "filtered_low_price_count": filtered_low_price_count,
             "candidates": candidates,
             "note": (
-                "Unverified candidates -- call get_options_chain(symbol) before treating "
-                "any of these as a real trade candidate."
+                f"Unverified candidates -- call get_options_chain(symbol) before treating "
+                f"any of these as a real trade candidate. {filtered_low_price_count} result(s) "
+                f"under ${MIN_SCREENER_PRICE:.0f} were already discarded and are not shown."
                 + (
-                    f" NOTE: total_matches ({total_matches}) exceeds the {SCREENER_MAX_COUNT} "
+                    f" ALSO NOTE: total_matches ({total_matches}) exceeds the {SCREENER_MAX_COUNT} "
                     "results returned -- this screen has more candidates than a single call "
                     "can return; treat this as a large but partial list, not the full screen."
-                    if isinstance(total_matches, int) and total_matches > len(candidates)
+                    if isinstance(total_matches, int) and total_matches > len(quotes)
                     else ""
                 )
             ),
