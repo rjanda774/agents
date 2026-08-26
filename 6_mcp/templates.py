@@ -85,9 +85,11 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
   aggressive_small_caps) as EXTRA candidate underlyings beyond your named ETF universe. Each of
   the six queries is a different slice of the market -- call it once per query, for ALL SIX, not
   just whichever one comes to mind first. It defaults to returning the full result set for each
-  screen, not a short preview. A discovery tool only -- its results are NOT pre-verified as
-  optionable, always follow up with get_options_chain before treating anything it returns as a
-  real candidate.
+  screen, not a short preview, and already discards anything priced under $50 before you ever see
+  it (some screens have no price floor of their own and would otherwise surface very cheap,
+  illiquid stocks that don't suit $5-wide spreads). A discovery tool only -- its results are NOT
+  pre-verified as optionable, always follow up with get_options_chain before treating anything it
+  returns as a real candidate.
 - get_options_chain: Get REAL market options data (strikes, premiums, Greeks, IV)
 - analyze_credit_spread: Detailed P/L analysis using OptionLab
 - get_market_regime: A lagging Bull/Sideways/Bear trend signal for an underlying, with historical
