@@ -9,31 +9,66 @@ from datetime import timezone
 import time
 import threading
 
-# Polygon free tier = 5 requests/minute
-# Rate limiter: track timestamps of recent calls and wait if needed
+# Rate limiter: track timestamps of recent calls and wait if needed.
 _polygon_lock = threading.Lock()
 _polygon_call_times = []
-_POLYGON_MAX_CALLS = 5
+# Free tier = Polygon's documented 5 requests/minute. Paid/realtime plans allow
+# substantially more -- this cap used to be hardcoded to the free-tier number
+# regardless of POLYGON_PLAN, needlessly throttling paid/realtime users to 5/min too.
+# Still a real cap on paid/realtime rather than "unlimited": exact per-plan limits
+# vary and a bounded queue here is safer than risking a real 429 from Polygon itself.
+_POLYGON_FREE_MAX_CALLS = 5
+_POLYGON_PAID_MAX_CALLS = 100
 _POLYGON_WINDOW = 62  # slightly over 60s to be safe
+# Cap how long a single caller will wait for a slot rather than blocking indefinitely.
+# Callers here (is_market_open, share-price lookups, get_market_regime) are invoked
+# from async MCP tool handlers with their own ~120s client-side timeout -- this must
+# stay comfortably under that, or a caller stuck waiting past its own timeout budget
+# never gets the chance to fail cleanly; it just hangs until the client gives up.
+_POLYGON_MAX_WAIT = 90.0
 
-def _polygon_rate_limited_call(fn):
-    """Call fn() respecting Polygon free tier limit of 5 requests/minute."""
-    with _polygon_lock:
-        now = time.monotonic()
-        # Drop timestamps older than the window
-        while _polygon_call_times and now - _polygon_call_times[0] > _POLYGON_WINDOW:
-            _polygon_call_times.pop(0)
-        # If at limit, wait until oldest call falls outside window
-        if len(_polygon_call_times) >= _POLYGON_MAX_CALLS:
-            wait = _POLYGON_WINDOW - (now - _polygon_call_times[0]) + 0.1
-            if wait > 0:
-                print(f"Polygon rate limit: waiting {wait:.1f}s...")
-                time.sleep(wait)
-            # Re-prune after sleeping
+
+def _polygon_rate_limit() -> tuple[int, float]:
+    if is_realtime_polygon or is_paid_polygon:
+        return _POLYGON_PAID_MAX_CALLS, _POLYGON_WINDOW
+    return _POLYGON_FREE_MAX_CALLS, _POLYGON_WINDOW
+
+
+def _polygon_rate_limited_call(fn, max_wait: float = _POLYGON_MAX_WAIT):
+    """Call fn() respecting the Polygon rate limit, waiting for a free slot if needed.
+
+    Used to hold _polygon_lock across both the wait AND the call to fn() itself,
+    fully serializing every Polygon call in the process -- which meant the wait for
+    any one call grew unboundedly with how many callers were already queued ahead of
+    it (each had to clear its own window first). Under load from get_market_regime
+    being called once per candidate, that reliably exceeded the 120s MCP client
+    timeout: calls didn't fail, they just hung until the client gave up, and because
+    the wait happened synchronously inside the server's single-threaded event loop
+    (see regime_server.py), the whole server stopped responding to anything else
+    while it slept -- cascading into every other in-flight call timing out too.
+    Now only holds the lock long enough to reserve a slot or read the queue depth,
+    and raises TimeoutError instead of blocking past max_wait, so a caller with its
+    own timeout budget gets a clear, fast failure instead of a silent hang.
+    """
+    deadline = time.monotonic() + max_wait
+    max_calls, window = _polygon_rate_limit()
+    while True:
+        with _polygon_lock:
             now = time.monotonic()
-            while _polygon_call_times and now - _polygon_call_times[0] > _POLYGON_WINDOW:
+            while _polygon_call_times and now - _polygon_call_times[0] > window:
                 _polygon_call_times.pop(0)
-        _polygon_call_times.append(time.monotonic())
+            if len(_polygon_call_times) < max_calls:
+                _polygon_call_times.append(now)
+                break
+            wait = window - (now - _polygon_call_times[0]) + 0.1
+        if time.monotonic() + wait > deadline:
+            raise TimeoutError(
+                f"Polygon rate limit queue is too deep right now -- this call would need "
+                f"to wait {wait:.0f}s, exceeding its {max_wait:.0f}s budget. Too many "
+                "Polygon requests queued; try again shortly."
+            )
+        print(f"Polygon rate limit: waiting {wait:.1f}s for a slot...")
+        time.sleep(min(wait, max(0.0, deadline - time.monotonic())))
     return fn()
 
 load_dotenv(override=True)

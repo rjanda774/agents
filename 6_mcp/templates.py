@@ -84,12 +84,14 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
   (most_actives, day_gainers, day_losers, growth_technology_stocks, undervalued_large_caps,
   aggressive_small_caps) as EXTRA candidate underlyings beyond your named ETF universe. Each of
   the six queries is a different slice of the market -- call it once per query, for ALL SIX, not
-  just whichever one comes to mind first. It defaults to returning the full result set for each
-  screen, not a short preview, and already discards anything priced under $50 before you ever see
-  it (some screens have no price floor of their own and would otherwise surface very cheap,
-  illiquid stocks that don't suit $5-wide spreads). A discovery tool only -- its results are NOT
-  pre-verified as optionable, always follow up with get_options_chain before treating anything it
-  returns as a real candidate.
+  just whichever one comes to mind first. It returns 40 results per call by default (far more than
+  the 3-5 you'll shortlist from) and already discards anything priced under $50 before you ever
+  see it (some screens have no price floor of their own and would otherwise surface very cheap,
+  illiquid stocks that don't suit $5-wide spreads). Don't raise `count` above the default across
+  all six calls in the same pass -- that many results at once can overflow your own context
+  window; the default is already enough to work with. A discovery tool only -- its results are
+  NOT pre-verified as optionable, always follow up with get_options_chain before treating anything
+  it returns as a real candidate.
 - get_options_chain: Get REAL market options data (strikes, premiums, Greeks, IV)
 - analyze_credit_spread: Detailed P/L analysis using OptionLab
 - get_market_regime: A lagging Bull/Sideways/Bear trend signal for an underlying, with historical
@@ -122,9 +124,10 @@ IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and
      already turned up names you like. All six, every cycle -- not just one, and not a
      fallback for when you're stuck. Each query surfaces a genuinely different slice of the
      market (momentum, value, growth, small-cap); checking only one or two misses most of
-     what it offers. It returns its full result set by default, not just a short preview.
-     Its results are unverified until you run them through get_options_chain, same as any
-     other candidate.
+     what it offers. It returns 40 results per call by default -- do not raise `count` on
+     these calls, the default is already plenty and six calls' worth at a higher count
+     can overflow your own context window. Its results are unverified until you run them
+     through get_options_chain, same as any other candidate.
    - Prefer underlyings with strong directional conviction (clearly bullish or clearly bearish sector/name)
    - Don't default to the same 2-3 names every cycle just because they're top-of-mind. Use your
      entity-memory tools to check what you evaluated or traded recently, and deliberately give
@@ -378,9 +381,10 @@ MANDATORY TOOL CALLS THIS CYCLE (do not skip these, even if your research alread
   - Call get_stock_screener ONCE FOR EACH of its six queries -- most_actives, day_gainers,
     day_losers, growth_technology_stocks, undervalued_large_caps, aggressive_small_caps -- before
     finalizing your candidate list. All six, not just one: each covers a different slice of the
-    market (momentum, value, growth, small-cap), and it returns its full result set by default,
-    not just a short preview. This is your check for names outside the named ETF universe, not a
-    fallback for when you're stuck.
+    market (momentum, value, growth, small-cap). It returns 40 results per call by default --
+    leave `count` at the default across all six calls; a higher count on every call risks
+    overflowing your own context window. This is your check for names outside the named ETF
+    universe, not a fallback for when you're stuck.
   - Call get_market_regime on each candidate you seriously consider, before you settle on a
     directional bias for it. Note whether it agrees or conflicts with your news research.
 
