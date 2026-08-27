@@ -25,6 +25,47 @@ def fetch_with_timeout(fn, timeout_seconds=30):
             raise TimeoutError(f"yfinance request timed out after {timeout_seconds}s")
 
 
+def _get_next_earnings_date(symbol: str):
+    """Best-effort lookup of `symbol`'s next upcoming earnings date via yfinance.
+
+    Returns a `datetime.date`, or None if it can't be determined (no data, or the
+    lookup itself failed/timed out) -- callers should treat None as "unknown", not
+    "no earnings", and decide how to fail accordingly.
+    """
+    import yfinance as yf
+    import datetime as dt_mod
+
+    def _fetch():
+        t = yf.Ticker(symbol)
+        # yfinance's Ticker.calendar shape has varied across versions (dict vs.
+        # DataFrame-like), so extract defensively rather than assume one structure.
+        cal = t.calendar
+        raw_dates = None
+        if isinstance(cal, dict):
+            raw_dates = cal.get("Earnings Date")
+        if not raw_dates:
+            return None
+        if not isinstance(raw_dates, (list, tuple)):
+            raw_dates = [raw_dates]
+        parsed = []
+        for d in raw_dates:
+            if isinstance(d, dt_mod.datetime):
+                parsed.append(d.date())
+            elif isinstance(d, dt_mod.date):
+                parsed.append(d)
+            else:
+                try:
+                    parsed.append(dt_mod.date.fromisoformat(str(d)))
+                except ValueError:
+                    continue
+        return min(parsed) if parsed else None
+
+    try:
+        return fetch_with_timeout(_fetch, timeout_seconds=15)
+    except Exception:
+        return None
+
+
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -599,6 +640,44 @@ async def sell_credit_spread(
                          f"{today + dt_mod.timedelta(days=25)} and {today + dt_mod.timedelta(days=45)}."
             })
 
+        # HARD ENFORCEMENT: no earnings from today through EARNINGS_BUFFER_DAYS_AFTER_EXPIRATION
+        # days past this trade's own expiration. "Skip if earnings falls in the window" has been
+        # prompt-only guidance in templates.py all along ("EARNINGS AVOIDANCE... If it does, skip
+        # it entirely") -- and, like every other prompt-only rule in this file before it got moved
+        # server-side, that wasn't enough on its own: a live NVDA bull put spread was opened one
+        # day before NVDA's own earnings release. An earnings move can blow through both strikes
+        # regardless of how far OTM they are, so this is now checked here rather than trusted to
+        # have been checked already. The buffer extends past expiration, not just up to it --
+        # implied vol (and the position's own remaining vega/gamma risk near the tail of its life)
+        # starts pricing in an upcoming earnings date well before the event itself, so a spread
+        # expiring just a few days ahead of earnings is still exposed to that run-up.
+        # Fails OPEN (allows the trade, with a warning) if the earnings date can't be determined --
+        # yfinance's calendar data isn't always populated -- rather than blocking every trade
+        # whenever that data is flaky; the warning is included in the success response so a gap
+        # here stays visible instead of silent.
+        EARNINGS_BUFFER_DAYS_AFTER_EXPIRATION = 20
+        next_earnings = _get_next_earnings_date(symbol)
+        earnings_warning = None
+        if next_earnings is not None:
+            danger_end = exp_date + dt_mod.timedelta(days=EARNINGS_BUFFER_DAYS_AFTER_EXPIRATION)
+            if today <= next_earnings <= danger_end:
+                return json.dumps({
+                    "error": (
+                        f"TRADE REJECTED: {symbol} has earnings on {next_earnings.isoformat()}, "
+                        f"which falls within the danger window (today through {danger_end.isoformat()}"
+                        f" -- {EARNINGS_BUFFER_DAYS_AFTER_EXPIRATION} days past this trade's "
+                        f"{expiration_date} expiration). Earnings moves can blow through both "
+                        "strikes regardless of delta. Pick a different underlying, choose an "
+                        "expiration that clears this window, or wait until after the earnings date."
+                    )
+                })
+        else:
+            earnings_warning = (
+                f"Could not verify {symbol}'s next earnings date (yfinance calendar data "
+                "unavailable) -- proceeding without an automated earnings check for this trade. "
+                "Double-check earnings timing yourself before relying on this position."
+            )
+
         # Load or create options account
         options_data = read_account(f"{name.lower()}_options")
         if not options_data:
@@ -762,7 +841,9 @@ async def sell_credit_spread(
             "account_summary": options_account.summary(),
             "message": f"Successfully opened {contracts} {spread_type} spread(s) on {symbol}"
         }
-        
+        if earnings_warning:
+            result["earnings_check_warning"] = earnings_warning
+
         return json.dumps(result, indent=2)
         
     except Exception as e:
