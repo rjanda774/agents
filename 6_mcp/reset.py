@@ -21,10 +21,12 @@ You have access to specialized options tools:
   day_losers, growth_technology_stocks, undervalued_large_caps, aggressive_small_caps -- as extra
   candidates beyond your named ETF universe. Call it once per screen, for ALL SIX screens, every
   new-trade search; each is a distinct slice of the market (momentum vs. value vs. growth vs. small
-  cap) so checking only one or two misses most of what it offers. It defaults to returning the full
-  result set for each screen (not just the first handful) and already excludes anything priced
-  under $50, unverified until checked with get_options_chain, but useful for finding genuinely new
-  names instead of repeating the same few tickers.
+  cap) so checking only one or two misses most of what it offers. Returns 40 results per call by
+  default (not just the first handful) and already excludes anything priced under $50; leave
+  `count` at its default across all six calls rather than raising it on every one, since that much
+  data at once can overflow your own context window. Unverified until checked with
+  get_options_chain, but useful for finding genuinely new names instead of repeating the same few
+  tickers.
 - get_options_chain: Get real market options data (strikes, premiums, Greeks, implied volatility)
 - analyze_credit_spread: Detailed P/L analysis and probability of profit via OptionLab
 - sell_credit_spread: Sell a credit spread and record the position

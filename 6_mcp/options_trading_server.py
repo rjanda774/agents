@@ -53,6 +53,18 @@ SCREENER_QUERIES = {
 # so 250 is also the most "all the tickers on this screener" can mean here in one call.
 SCREENER_MAX_COUNT = 250
 
+# FIXED: count previously defaulted to SCREENER_MAX_COUNT (250) -- with all six screens
+# now mandatory every new-trade pass (see templates.py), that meant up to 6 x 250 = 1500
+# candidate records injected into the conversation in one cycle, pretty-printed. On a
+# 128k-context model (gpt-4o-mini) this reliably blew the context window outright
+# (observed: "Your input exceeds the context window of this model"), not just bloated it.
+# 40 is still a large jump from the original hardcoded 15 -- comfortably enough to widen
+# real candidate discovery -- while keeping six calls' worth of results well within
+# budget alongside everything else a trade pass accumulates. count can still be raised
+# up to SCREENER_MAX_COUNT for a single deliberately exhaustive call; just don't do that
+# on all six screens in the same pass.
+SCREENER_DEFAULT_COUNT = 40
+
 # HARD FILTER: discard candidates priced under $50 before they're even returned. Observed
 # in practice: aggressive_small_caps has no price floor at all in Yahoo's own filter
 # definition (day_gainers/day_losers only require >= $5), and Cathie was seen opening
@@ -67,7 +79,7 @@ MIN_SCREENER_PRICE = 50.0
 
 
 @mcp.tool()
-async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_MAX_COUNT) -> str:
+async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_DEFAULT_COUNT) -> str:
     """Screen for liquid, actively-traded stocks as extra credit-spread candidates,
     beyond the named ETF universe.
 
@@ -75,8 +87,12 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
     to widen candidate discovery beyond the named ETF universe and whatever the
     research tool happened to surface -- especially useful for finding genuinely
     different names cycle over cycle instead of converging on the same handful.
-    Defaults to returning the full result set (up to Yahoo's 250-per-request cap) --
-    don't pass a small `count` unless you specifically want fewer.
+    Defaults to 40 results per call -- comfortably more than you need to shortlist
+    3-5 candidates from, and safe to call across all six screens in one pass without
+    risking the model's context window. Raise `count` (up to 250, Yahoo's own cap)
+    only for a single screen you specifically want exhaustive coverage of, not on
+    every screen in the same pass -- six calls at 250 each was observed to blow the
+    context window outright on smaller models.
 
     This is a discovery tool only: results are NOT pre-verified as optionable. Always
     follow up with get_options_chain(symbol) for any candidate you're seriously
@@ -97,8 +113,9 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
             "undervalued_large_caps" -- low P/E, low PEG large caps.
             "aggressive_small_caps" -- higher-volume small caps; options liquidity is
                 less reliable here than the others, double-check open interest.
-        count: how many results to return (1-250, default 250 -- Yahoo's per-request max,
-            i.e. everything this screen has to offer in one call).
+        count: how many results to return (1-250, default 40). See above -- avoid
+            raising this on every screen in the same pass; it's meant for one
+            deliberately exhaustive call, not the default across all six.
 
     Returns:
         JSON list of candidates (symbol, name, price, day % change, volume), or an
@@ -169,15 +186,18 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
                 f"any of these as a real trade candidate. {filtered_low_price_count} result(s) "
                 f"under ${MIN_SCREENER_PRICE:.0f} were already discarded and are not shown."
                 + (
-                    f" ALSO NOTE: total_matches ({total_matches}) exceeds the {SCREENER_MAX_COUNT} "
-                    "results returned -- this screen has more candidates than a single call "
-                    "can return; treat this as a large but partial list, not the full screen."
+                    f" ALSO NOTE: total_matches ({total_matches}) exceeds the {count} results "
+                    "returned -- this screen has more candidates than this call returned; "
+                    "raise `count` (up to 250) if you want a more exhaustive look at this "
+                    "one screen specifically."
                     if isinstance(total_matches, int) and total_matches > len(quotes)
                     else ""
                 )
             ),
         },
-        indent=2,
+        # Compact, not pretty-printed -- this tool is called up to six times per pass
+        # (see templates.py's mandatory-per-screen instruction), and indent=2 alone adds
+        # meaningful token overhead multiplied across every one of those calls.
         default=str,
     )
 
