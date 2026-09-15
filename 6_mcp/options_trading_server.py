@@ -486,8 +486,18 @@ async def get_options_chain(
         chain = _fetch_chain(symbol, expiration_date)
 
         def _public(rows):
-            return [
-                {
+            # gamma/theta/vega are only ever populated on the schwab path (yfinance has
+            # no Greeks at all beyond the delta computed in _fetch_chain) -- omit them
+            # entirely rather than emit "gamma": null/"theta": null/"vega": null on
+            # every one of up to 50 records per call. Three extra always-null keys
+            # across 3-5 candidates' worth of get_options_chain calls in a pass was
+            # enough on its own to blow gpt-4o-mini's context window (see CLAUDE.md's
+            # get_stock_screener history for the same class of bug); this keeps the
+            # yfinance-path payload the same size it always was, and only grows when
+            # Schwab is actually configured and there's real data to show for it.
+            out = []
+            for r in rows[:25]:
+                rec = {
                     "strike": r["strike"],
                     "lastPrice": r["lastPrice"],
                     "bid": r["bid"],
@@ -496,12 +506,12 @@ async def get_options_chain(
                     "openInterest": r["openInterest"],
                     "impliedVolatility": r["impliedVolatility"],
                     "delta": r["delta"],
-                    "gamma": r["gamma"],
-                    "theta": r["theta"],
-                    "vega": r["vega"],
                 }
-                for r in rows[:25]
-            ]
+                for greek in ("gamma", "theta", "vega"):
+                    if r.get(greek) is not None:
+                        rec[greek] = r[greek]
+                out.append(rec)
+            return out
 
         result = {
             "symbol": symbol,
