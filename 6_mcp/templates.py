@@ -77,7 +77,15 @@ Your goal is to maximize your profits according to your strategy.
     if name == "Cathie":
         cathie_tools = f"""
 
-IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS powered by yfinance and OptionLab:
+IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS. Market data (option chains,
+bid/ask, open interest, Greeks) comes from a real Schwab brokerage account's live
+market data feed when configured, falling back automatically to yfinance + OptionLab's
+Black-Scholes otherwise -- check the "data_source" field on get_options_chain and
+analyze_credit_spread responses ("schwab", "yfinance", or "yfinance (schwab fallback)")
+if you want to know which one supplied a given number. Either way, YOUR TRADES ARE STILL
+SIMULATED: sell_credit_spread/close_credit_spread only ever update your local paper
+account (cash/positions tracked here, not at Schwab) -- no real order is ever sent to
+Schwab or anywhere else, regardless of which data source priced the trade.
 
 **Data Tools:**
 - get_stock_screener: Pull a live list of liquid, actively-traded stocks from Yahoo Finance
