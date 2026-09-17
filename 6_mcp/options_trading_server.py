@@ -411,6 +411,61 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
 
 
 @mcp.tool()
+async def get_custom_watchlist() -> str:
+    """Get the user's own hand-picked candidate tickers from watchlist.txt.
+
+    This is a plain text file (one ticker per line, '#' comments allowed) that
+    the person running this trading floor edits directly -- add or remove
+    tickers any time; changes take effect on your very next cycle since this
+    reads the file fresh on every call, no restart needed.
+
+    Like get_stock_screener, this is a discovery tool only: these are
+    unverified candidates, not pre-checked for optionability or liquidity.
+    Always follow up with get_options_chain(symbol) before treating any of
+    them as a real candidate, and every server-enforced rule (25-45 DTE,
+    delta, premium floor, risk cap, earnings) still applies regardless of
+    where a candidate came from -- a ticker being on this list is a suggestion
+    to consider, not an instruction to trade it.
+
+    Returns:
+        JSON with the ticker list and a count, or a friendly note (not an
+        error) if the file is missing or empty -- an empty watchlist is a
+        normal, common state, not a failure.
+    """
+    try:
+        from universe import load_custom_watchlist
+
+        tickers = load_custom_watchlist()
+        if not tickers:
+            return json.dumps(
+                {
+                    "tickers": [],
+                    "count": 0,
+                    "note": (
+                        "Your custom watchlist (watchlist.txt) is empty or doesn't exist yet. "
+                        "This is normal, not an error -- it's an optional extra candidate source "
+                        "on top of your named ETF universe and get_stock_screener. Nothing to do "
+                        "here; the person running this trading floor can add tickers to "
+                        "watchlist.txt at any time."
+                    ),
+                }
+            )
+        return json.dumps(
+            {
+                "tickers": tickers,
+                "count": len(tickers),
+                "note": (
+                    "Unverified candidates from the user's own hand-picked watchlist -- call "
+                    "get_options_chain(symbol) before treating any of these as a real candidate, "
+                    "same as get_stock_screener's results."
+                ),
+            }
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
 async def get_options_chain(
     symbol: str,
     expiration_date: str = ""

@@ -1,0 +1,19 @@
+# Cathie's custom watchlist -- hand-edit this file with your own candidate
+# tickers. Cathie reads it fresh every new-trade pass (get_custom_watchlist,
+# via universe.py: load_custom_watchlist), so changes here take effect on her
+# very next cycle -- no restart of the trading floor needed.
+#
+# Format:
+#   - One ticker per line, case-insensitive (uppercased automatically).
+#   - Lines starting with '#' are comments; blank lines are ignored.
+#   - You can also add an inline comment after a ticker, e.g. "NVDA # earnings 10/28".
+#
+# These are unverified candidates, same as get_stock_screener's results --
+# Cathie still runs each one through get_options_chain and every server-enforced
+# rule (25-45 DTE, delta, premium floor, risk cap, earnings) before ever trading
+# it. Adding a ticker here is a suggestion to consider, not an instruction to trade.
+#
+# Example (uncomment to try):
+# NVDA
+# AAPL
+# MSFT

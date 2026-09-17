@@ -100,6 +100,12 @@ Schwab or anywhere else, regardless of which data source priced the trade.
   window; the default is already enough to work with. A discovery tool only -- its results are
   NOT pre-verified as optionable, always follow up with get_options_chain before treating anything
   it returns as a real candidate.
+- get_custom_watchlist: Pull the tickers from the user's own hand-edited watchlist.txt file --
+  a candidate source they maintain directly, separate from your named ETF universe and the
+  screener. Call it once every new-trade pass (cheap -- a local file read, no network call).
+  It's normal and not an error for this to come back empty; the user adds to it whenever they
+  want to point you at something specific. Same as get_stock_screener, these are unverified --
+  always follow up with get_options_chain before treating anything it returns as a real candidate.
 - get_options_chain: Get REAL market options data (strikes, premiums, Greeks, IV)
 - analyze_credit_spread: Detailed P/L analysis using OptionLab
 - get_market_regime: A lagging Bull/Sideways/Bear trend signal for an underlying, with historical
@@ -126,6 +132,10 @@ Schwab or anywhere else, regardless of which data source priced the trade.
 2. Based on your research, identify 3-5 candidate underlyings to evaluate. Your universe is wide:
    - Major ETFs: {CATHIE_ETF_UNIVERSE_TEXT}
    - Any individual stock or ETF where the price is above $100 and options have open interest > 50
+   - MANDATORY: call get_custom_watchlist() once -- these are tickers the person running this
+     trading floor specifically wants you to consider. An empty result is normal, not an error;
+     when it does have tickers, give them real consideration alongside everything else here,
+     not just a token glance.
    - MANDATORY: call get_stock_screener once for EACH of its six queries (most_actives,
      day_gainers, day_losers, growth_technology_stocks, undervalued_large_caps,
      aggressive_small_caps) before you finalize your candidate list, even if your research
@@ -394,6 +404,9 @@ Use the research tool to identify:
     waste a candidate slot on one you'll just have to abandon)
 
 MANDATORY TOOL CALLS THIS CYCLE (do not skip these, even if your research already looks sufficient):
+  - Call get_custom_watchlist() once -- these are tickers the person running this trading floor
+    specifically asked you to consider. An empty result is normal, not an error; when it does
+    return tickers, give them real consideration, not just a token glance before moving on.
   - Call get_stock_screener ONCE FOR EACH of its six queries -- most_actives, day_gainers,
     day_losers, growth_technology_stocks, undervalued_large_caps, aggressive_small_caps -- before
     finalizing your candidate list. All six, not just one: each covers a different slice of the
@@ -405,8 +418,8 @@ MANDATORY TOOL CALLS THIS CYCLE (do not skip these, even if your research alread
     directional bias for it. Note whether it agrees or conflicts with your news research.
 
 Then check 3-5 candidates using get_options_chain(). Your named universe includes {CATHIE_ETF_UNIVERSE_TEXT},
-plus any liquid stock or ETF with price > $100 and open interest > 50, plus whatever all six
-get_stock_screener calls just returned. Don't default to the same 2-3 names every cycle -- check your
+plus any liquid stock or ETF with price > $100 and open interest > 50, plus whatever get_custom_watchlist()
+and all six get_stock_screener calls just returned. Don't default to the same 2-3 names every cycle -- check your
 entity-memory tools for what you evaluated or traded in recent cycles, and deliberately consider
 genuinely different candidates unless today's research specifically favors repeating one.
 
