@@ -22,7 +22,7 @@ see schwab_auth_setup.py):
   1. Register an app at https://developer.schwab.com ("Trader API - Individual").
      Approval is not instant.
   2. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET / SCHWAB_CALLBACK_URL in .env.
-  3. Run `python schwab_auth_setup.py` once to complete the OAuth login and
+  3. Run `uv run schwab_auth_setup.py` once to complete the OAuth login and
      write a token file to SCHWAB_TOKEN_PATH.
   4. Schwab refresh tokens expire after 7 days (a hard platform limit, not a
      bug here) -- re-run step 3 whenever calls start failing/falling back.
@@ -116,7 +116,7 @@ def _get_client():
         if not os.path.exists(SCHWAB_TOKEN_PATH):
             raise SchwabNotConfiguredError(
                 f"No Schwab token file at {SCHWAB_TOKEN_PATH} -- run "
-                "`python schwab_auth_setup.py` once to log in."
+                "`uv run schwab_auth_setup.py` once to log in."
             )
         try:
             import schwab.auth
@@ -131,7 +131,7 @@ def _get_client():
             raise SchwabAuthError(
                 f"Schwab token file exists but couldn't be used ({e}). The refresh "
                 "token most likely expired (Schwab refresh tokens are only valid for "
-                "7 days) or was revoked -- re-run `python schwab_auth_setup.py`."
+                "7 days) or was revoked -- re-run `uv run schwab_auth_setup.py`."
             ) from e
         return _client
 
