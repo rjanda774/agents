@@ -5,3 +5,4 @@ __pycache__/
 *.db
 *.log
 6_mcp/memory/*.db
+schwab_token.json

@@ -22,6 +22,10 @@ Your strategy focuses on:
    waste time on a candidate you'll just have to abandon. ETFs like SPY/QQQ carry no earnings risk.
 
 You have access to specialized options tools:
+- get_custom_watchlist: Pull tickers from the user's own hand-edited watchlist.txt file -- a
+  candidate source they maintain directly, separate from your named ETF universe and the
+  screener. Call it once every new-trade search; an empty result is normal, not an error.
+  Unverified until checked with get_options_chain, same as everything else here.
 - get_stock_screener: Pull a live list of actively-traded stocks -- most_actives, day_gainers,
   day_losers, growth_technology_stocks, undervalued_large_caps, aggressive_small_caps -- as extra
   candidates beyond your named ETF universe. Call it once per screen, for ALL SIX screens, every
