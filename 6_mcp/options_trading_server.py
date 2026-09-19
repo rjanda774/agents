@@ -485,10 +485,13 @@ async def get_options_chain(
         expiration_date: Specific expiration (YYYY-MM-DD) or empty to list available dates
 
     Returns:
-        JSON with available strikes, prices, Greeks, implied volatility, and delta.
-        Delta (and gamma/theta/vega, when data_source is "schwab") is Schwab's own
-        real, broker-reported value; on a yfinance path only delta is present, computed
-        via Black-Scholes since yfinance's raw chain has no Greeks at all.
+        JSON with available strikes, prices, open interest, implied volatility, and
+        delta for each strike (delta is Schwab's real broker-reported value when
+        data_source is "schwab", else computed via Black-Scholes). Deliberately does
+        NOT include gamma/theta/vega here -- none of your rules ever need them at the
+        per-strike level, only delta (the 0.20 band) and open interest/premium; the
+        fuller Greeks for your actual chosen spread are in analyze_credit_spread's
+        output instead, where it's one spread, not up to 50 strikes.
     """
     try:
         today = dt_mod.date.today()
@@ -540,32 +543,39 @@ async def get_options_chain(
 
         chain = _fetch_chain(symbol, expiration_date)
 
+        def _round(v, ndigits):
+            return round(v, ndigits) if isinstance(v, (int, float)) else v
+
         def _public(rows):
-            # gamma/theta/vega are only ever populated on the schwab path (yfinance has
-            # no Greeks at all beyond the delta computed in _fetch_chain) -- omit them
-            # entirely rather than emit "gamma": null/"theta": null/"vega": null on
-            # every one of up to 50 records per call. Three extra always-null keys
-            # across 3-5 candidates' worth of get_options_chain calls in a pass was
-            # enough on its own to blow gpt-4o-mini's context window (see CLAUDE.md's
-            # get_stock_screener history for the same class of bug); this keeps the
-            # yfinance-path payload the same size it always was, and only grows when
-            # Schwab is actually configured and there's real data to show for it.
+            # FIXED: this used to include gamma/theta/vega whenever a record had them
+            # (previously that meant "never, on yfinance" -- now that Schwab is
+            # actually configured and working, it means "always, with real values").
+            # None of Cathie's rules ever check gamma/theta/vega at the per-strike
+            # listing level -- only delta (the 0.20 band) and open interest/premium
+            # matter here; the fuller Greeks she does use for her chosen spread are
+            # already in analyze_credit_spread's output, which is one spread, not up
+            # to 50 strikes. Reproduced live: switching from yfinance to a working
+            # Schwab connection alone was enough to blow gpt-4o-mini's context window
+            # again in the new-trade pass (3-5 candidates x up to 2 calls each x up to
+            # 50 real, non-null Greek values per call), the same class of bug as the
+            # get_stock_screener context overflow in CLAUDE.md's history -- so drop
+            # gamma/theta/vega here unconditionally, not just when null, and round the
+            # remaining floats to keep each record as compact as the old yfinance-only
+            # payload regardless of which source supplied it.
             out = []
             for r in rows[:25]:
-                rec = {
-                    "strike": r["strike"],
-                    "lastPrice": r["lastPrice"],
-                    "bid": r["bid"],
-                    "ask": r["ask"],
-                    "volume": r["volume"],
-                    "openInterest": r["openInterest"],
-                    "impliedVolatility": r["impliedVolatility"],
-                    "delta": r["delta"],
-                }
-                for greek in ("gamma", "theta", "vega"):
-                    if r.get(greek) is not None:
-                        rec[greek] = r[greek]
-                out.append(rec)
+                out.append(
+                    {
+                        "strike": r["strike"],
+                        "lastPrice": _round(r["lastPrice"], 2),
+                        "bid": _round(r["bid"], 2),
+                        "ask": _round(r["ask"], 2),
+                        "volume": r["volume"],
+                        "openInterest": r["openInterest"],
+                        "impliedVolatility": _round(r["impliedVolatility"], 4),
+                        "delta": _round(r["delta"], 4),
+                    }
+                )
             return out
 
         result = {
