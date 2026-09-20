@@ -24,6 +24,18 @@
   A manual Ctrl+C in an interactive console terminates this whole script (not
   just the inner `uv run` call) under PowerShell's default behavior, so stopping
   it by hand does NOT count as a crash and will not trigger a retry.
+
+  HOWEVER -- observed live: Ctrl+C does not reliably kill trading_floor.py's
+  child MCP-server subprocesses (accounts_server.py, push_server.py, etc.) on
+  Windows, since Windows doesn't cascade-terminate a process tree by default
+  the way POSIX signal groups do. A subsequent restart's single-instance lock
+  (single_instance.py) only guards against a second trading_floor.py itself --
+  it won't notice orphaned children from a Ctrl+C'd previous run, which then
+  keep running alongside the new instance's own fresh set. After any Ctrl+C,
+  verify nothing's left before restarting:
+    Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+      Where-Object { $_.CommandLine -like "*.venv\Scripts\python.exe*" }
+  and Stop-Process -Force anything it still lists.
 #>
 
 $ErrorActionPreference = "Stop"
