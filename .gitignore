@@ -6,3 +6,4 @@ __pycache__/
 *.log
 6_mcp/memory/*.db
 schwab_token.json
+.trading_floor.lock

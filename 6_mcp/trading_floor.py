@@ -4,6 +4,7 @@ import asyncio
 from tracers import LogTracer
 from agents import add_trace_processor
 from market import is_market_open
+from single_instance import acquire_single_instance_lock, AlreadyRunningError
 from dotenv import load_dotenv
 import os
 
@@ -40,5 +41,16 @@ async def run_every_n_minutes():
 
 
 if __name__ == "__main__":
+    # Guard against a second trading_floor.py accidentally running alongside
+    # this one -- observed in practice to cause hard-to-diagnose Schwab token
+    # flakiness (two processes racing on the same schwab_token.json) and,
+    # more importantly, two independent trading cycles driving Cathie's
+    # account state at once. See single_instance.py for the full story.
+    try:
+        acquire_single_instance_lock()
+    except AlreadyRunningError as e:
+        print(f"ERROR: {e}")
+        raise SystemExit(1)
+
     print(f"Starting scheduler to run every {RUN_EVERY_N_MINUTES} minutes")
     asyncio.run(run_every_n_minutes())

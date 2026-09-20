@@ -4,3 +4,4 @@ __pycache__/
 *.db
 .venv/
 schwab_token.json
+.trading_floor.lock
