@@ -19,6 +19,7 @@ dependencies = [
     "optionlab",
     "scipy",
     "schwab-py",
+    "authlib<1.8.0",
 ]
 
 [tool.uv]
