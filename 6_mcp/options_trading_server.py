@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP  # type: ignore
 from datetime import datetime, timedelta
 from typing import Dict, List
 import json
+import math
 import sys
 import os
 import concurrent.futures
@@ -83,6 +84,21 @@ def _get_next_earnings_date(symbol: str):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 mcp = FastMCP("options_trading_server")
+
+
+def _finite_or(v, default=None):
+    """`v` as a float if it's a real finite number, else `default`.
+
+    yfinance hands back pandas NaN for missing quote fields, and NaN is truthy, so the
+    old `float(x or 0.0)` idiom let it straight through. NaN is poison for every
+    server-side gate here: all comparisons against it are False, so a NaN premium or
+    max loss silently skips the premium floor and the risk cap instead of tripping them.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
 
 
 def _yfinance_data_source_label() -> str:
@@ -212,16 +228,18 @@ def _fetch_chain(symbol: str, expiration_date: str) -> dict:
     def _rows(df, option_type: str):
         rows = []
         for _, row in df.iterrows():
-            iv = row.get("impliedVolatility")
+            iv = _finite_or(row.get("impliedVolatility")) or None  # NaN or 0 -> None
+            volume = _finite_or(row.get("volume"))
+            open_interest = _finite_or(row.get("openInterest"))
             rows.append(
                 {
                     "strike": float(row["strike"]),
-                    "bid": float(row.get("bid") or 0.0),
-                    "ask": float(row.get("ask") or 0.0),
-                    "lastPrice": float(row.get("lastPrice") or 0.0),
-                    "volume": row.get("volume"),
-                    "openInterest": row.get("openInterest"),
-                    "impliedVolatility": float(iv) if iv else None,
+                    "bid": _finite_or(row.get("bid"), 0.0),
+                    "ask": _finite_or(row.get("ask"), 0.0),
+                    "lastPrice": _finite_or(row.get("lastPrice"), 0.0),
+                    "volume": int(volume) if volume is not None else None,
+                    "openInterest": int(open_interest) if open_interest is not None else None,
+                    "impliedVolatility": iv,
                     "delta": compute_delta(row["strike"], iv, option_type),
                     "gamma": None,
                     "theta": None,
@@ -664,6 +682,16 @@ async def analyze_credit_spread(
         long_premium  = (long_row["bid"]  + long_row["ask"])  / 2
         iv = float(short_row["impliedVolatility"] or 0.0)
 
+        # Guard: a non-finite quote (NaN/inf from any data source) would slip past every
+        # "<=" check below, since comparisons against NaN are always False, and end up as
+        # a NaN premium/max loss that also slips past sell_credit_spread's gates.
+        if not all(math.isfinite(v) for v in (short_premium, long_premium, iv, float(current_price))):
+            return json.dumps({
+                "error": f"Market data for {symbol} {expiration_date} is incomplete (non-numeric "
+                         f"bid/ask, implied volatility, or underlying price). Can't price this "
+                         f"spread reliably -- try a different strike, expiration, or underlying."
+            })
+
         # Guard: zero or near-zero premium means the option is illiquid or too far OTM
         if short_premium <= 0.01:
             return json.dumps({
@@ -762,6 +790,8 @@ async def analyze_credit_spread(
         spread_width = abs(short_strike - long_strike)
         max_profit_dollars = round(net_premium_per_spread * 100 * contracts, 2)
         max_loss_dollars   = round((spread_width - net_premium_per_spread) * 100 * contracts, 2)
+        if not (math.isfinite(max_profit_dollars) and math.isfinite(max_loss_dollars)):
+            return json.dumps({"error": f"Computed P/L for {symbol} is not a finite number -- market data is unusable right now."})
 
         if spread_type == "bull_put":
             breakeven = round(short_strike - net_premium_per_spread, 2)
@@ -934,6 +964,16 @@ async def sell_credit_spread(
         short_premium_per = float(analysis['premium']['short_leg'])
         long_premium_per  = float(analysis['premium']['long_leg'])
         short_leg_delta = analysis.get('greeks', {}).get('short_leg_delta')
+
+        # HARD ENFORCEMENT: every gate below is a comparison, and comparisons against NaN
+        # are always False -- so a NaN premium or max loss would pass the premium floor and
+        # the risk cap and get written into the ledger. analyze_credit_spread already
+        # rejects non-finite quotes; this re-checks at the point of mutation regardless.
+        if not all(math.isfinite(v) for v in (net_premium, max_loss, short_premium_per, long_premium_per)):
+            return json.dumps({
+                "error": "TRADE REJECTED: premium or max loss is not a finite number (bad market "
+                         "data). Nothing was opened -- try again later or pick a different candidate."
+            })
 
         # HARD ENFORCEMENT: short leg must be genuinely far OTM (|delta| < 0.20). The prompt
         # has asked for a delta band all along, but get_options_chain never actually returned
@@ -1176,7 +1216,15 @@ async def close_credit_spread(
             # on each leg before treating this as a usable quote; otherwise fall through
             # to the existing (correct) "no market data" handling below, which assumes
             # breakeven rather than fabricating a gain.
-            if (short_bid_q > 0 or short_ask_q > 0) and (long_bid_q > 0 or long_ask_q > 0):
+            # Also require every quote (and the underlying price used for the breach check) to
+            # be finite: NaN on one side would otherwise pass the "> 0" check via the other
+            # side and produce a NaN closing_cost -- and a NaN P&L written to the ledger if
+            # the breach or expiry trigger then fired.
+            quotes_finite = all(
+                math.isfinite(_finite_or(v, float("nan")))
+                for v in (short_bid_q, short_ask_q, long_bid_q, long_ask_q, current_price)
+            )
+            if quotes_finite and (short_bid_q > 0 or short_ask_q > 0) and (long_bid_q > 0 or long_ask_q > 0):
                 # Cost to close = buy back short + sell back long
                 short_ask = (short_bid_q + short_ask_q) / 2
                 long_bid  = (long_bid_q  + long_ask_q)  / 2
