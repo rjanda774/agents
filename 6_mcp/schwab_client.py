@@ -205,6 +205,21 @@ def get_option_chain(symbol: str, from_date: dt.date, to_date: dt.date) -> dict:
     if underlying_price is None:
         raise ValueError(f"Schwab option chain for {symbol} had no underlying price")
 
+    def _greek(v):
+        # Schwab reports -999.0 (and occasionally "NaN") for Greeks/volatility it
+        # couldn't compute -- typically a contract with no live quote. Treat those as
+        # missing rather than passing them on as real numbers: callers already handle
+        # None (analyze_credit_spread falls back to Black-Scholes, sell_credit_spread
+        # rejects a missing delta), whereas -999 would show up in get_options_chain as a
+        # nonsense delta and poison any net-Greek arithmetic.
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        if f != f or f <= -999.0:
+            return None
+        return f
+
     def _extract(date_map: dict) -> dict:
         by_exp: dict[str, list[dict]] = {}
         for exp_key, strikes in date_map.items():
@@ -212,7 +227,7 @@ def get_option_chain(symbol: str, from_date: dt.date, to_date: dt.date) -> dict:
             exp_date_str = exp_key.split(":")[0]
             for contracts in strikes.values():
                 for c in contracts:
-                    iv_pct = c.get("volatility")
+                    iv_pct = _greek(c.get("volatility"))
                     by_exp.setdefault(exp_date_str, []).append(
                         {
                             "strike": float(c.get("strikePrice")),
@@ -225,10 +240,10 @@ def get_option_chain(symbol: str, from_date: dt.date, to_date: dt.date) -> dict:
                             # 23.4 meaning 23.4%) -- convert to the plain decimal
                             # fraction (0.234) the rest of this codebase expects.
                             "impliedVolatility": (iv_pct / 100.0) if iv_pct else None,
-                            "delta": c.get("delta"),
-                            "gamma": c.get("gamma"),
-                            "theta": c.get("theta"),
-                            "vega": c.get("vega"),
+                            "delta": _greek(c.get("delta")),
+                            "gamma": _greek(c.get("gamma")),
+                            "theta": _greek(c.get("theta")),
+                            "vega": _greek(c.get("vega")),
                             "days_to_expiration": c.get("daysToExpiration"),
                         }
                     )
