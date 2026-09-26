@@ -1,7 +1,17 @@
 """
 Options Trading Server for Cathie
-Uses yfinance for FREE real options data
-Uses OptionLab for credit spread analysis
+Real market data (option chains, quotes) from Schwab's Market Data API when
+configured (schwab_client.py), falling back automatically to yfinance
+otherwise or on any Schwab failure -- every response that touches live chain
+data carries a "data_source" field ("schwab" / "yfinance" / "yfinance (schwab
+fallback)") so it's always visible which one actually supplied the numbers.
+Uses OptionLab for credit spread P/L analysis and probability-of-profit.
+Trades remain fully simulated regardless of data source: sell_credit_spread/
+close_credit_spread only ever write to the local `cathie_options` pseudo-
+account (accounts.db/options_models.py) -- there is no order-placement code
+here, against Schwab or anyone else. See CLAUDE.md and schwab_client.py for
+why ("real data, simulated fills" -- Schwab's API has no paper-trading
+sandbox of its own).
 Completely separate from stock trading system
 """
 from mcp.server.fastmcp import FastMCP  # type: ignore
@@ -11,7 +21,10 @@ import json
 import sys
 import os
 import concurrent.futures
+import datetime as dt_mod
 from pathlib import Path
+
+import schwab_client
 
 
 def fetch_with_timeout(fn, timeout_seconds=30):
@@ -70,6 +83,160 @@ def _get_next_earnings_date(symbol: str):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 mcp = FastMCP("options_trading_server")
+
+
+def _yfinance_data_source_label() -> str:
+    """Label to attach to a yfinance-sourced response -- distinguishes "Schwab was
+    never configured" from "Schwab was configured but this particular call fell
+    back", so a spot-check of the logs can tell the two apart."""
+    return "yfinance" if not schwab_client.is_configured() else "yfinance (schwab fallback)"
+
+
+def _fetch_valid_expirations(symbol: str, min_date: dt_mod.date, max_date: dt_mod.date):
+    """List expirations for `symbol` in [min_date, max_date] plus current price.
+
+    Tries Schwab first (real broker data) when configured, falling back to
+    yfinance on any failure or when Schwab isn't configured at all.
+
+    Returns (current_price, valid_expirations, data_source, source_note) where
+    valid_expirations is a list of {"date": "YYYY-MM-DD", "days_to_expiration": int},
+    and source_note is a human-readable explanation when a Schwab fallback happened
+    (None otherwise).
+    """
+    source_note = None
+    if schwab_client.is_configured():
+        try:
+            def _call():
+                return schwab_client.get_option_chain(symbol, min_date, max_date)
+            data = fetch_with_timeout(_call, timeout_seconds=30)
+            valid_exps = [
+                {"date": d, "days_to_expiration": info["days_to_expiration"]}
+                for d, info in sorted(data["expirations"].items())
+            ]
+            return data["current_price"], valid_exps, "schwab", None
+        except Exception as e:
+            source_note = f"Schwab market data unavailable ({e}); fell back to yfinance."
+
+    import yfinance as yf
+
+    def _fetch():
+        t = yf.Ticker(symbol)
+        exps = t.options
+        if not exps:
+            raise ValueError(f"No options available for {symbol}")
+        price = t.fast_info.get("lastPrice", 0)
+        return exps, price
+
+    all_exps, price = fetch_with_timeout(_fetch, timeout_seconds=30)
+    today = dt_mod.date.today()
+    valid_exps = []
+    for e in all_exps:
+        try:
+            d = dt_mod.date.fromisoformat(e)
+            days = (d - today).days
+            if 25 <= days <= 45:
+                valid_exps.append({"date": e, "days_to_expiration": days})
+        except ValueError:
+            pass
+    return float(price), valid_exps, _yfinance_data_source_label(), source_note
+
+
+def _fetch_chain(symbol: str, expiration_date: str) -> dict:
+    """Fetch a normalized option chain for one specific expiration.
+
+    Tries Schwab first (real bid/ask/open interest/IV and real broker-computed
+    Greeks) when configured, falling back to yfinance (which has no Greeks at
+    all -- delta is computed here via Black-Scholes in that path only) on any
+    Schwab failure or when it isn't configured.
+
+    Returns:
+        {
+            "current_price": float,
+            "puts":  [ {strike, bid, ask, lastPrice, volume, openInterest,
+                        impliedVolatility, delta, gamma, theta, vega}, ... ],
+            "calls": [ ... same shape ... ],   # gamma/theta/vega are None on
+                                                # the yfinance path -- get_options_chain
+                                                # only ever needed delta there before
+            "data_source": "schwab" | "yfinance" | "yfinance (schwab fallback)",
+            "source_note": str | None,
+        }
+    Both lists are sorted by strike. Raises if neither source can produce data.
+    """
+    if schwab_client.is_configured():
+        try:
+            def _call():
+                d = dt_mod.date.fromisoformat(expiration_date)
+                return schwab_client.get_option_chain(symbol, d, d)
+            data = fetch_with_timeout(_call, timeout_seconds=30)
+            exp_info = data["expirations"].get(expiration_date)
+            if not exp_info:
+                raise ValueError(
+                    f"Schwab returned no contracts for {symbol} expiring {expiration_date}"
+                )
+            return {
+                "current_price": data["current_price"],
+                "puts": exp_info["puts"],
+                "calls": exp_info["calls"],
+                "data_source": "schwab",
+                "source_note": None,
+            }
+        except Exception as e:
+            source_note = f"Schwab market data unavailable ({e}); fell back to yfinance for this chain."
+    else:
+        source_note = None
+
+    import yfinance as yf
+    from optionlab.black_scholes import get_bs_info
+
+    def _fetch():
+        t = yf.Ticker(symbol)
+        price = t.fast_info.get("lastPrice") or t.history(period="1d")["Close"].iloc[-1]
+        chain = t.option_chain(expiration_date)
+        return float(price), chain
+
+    price, chain = fetch_with_timeout(_fetch, timeout_seconds=30)
+
+    today = dt_mod.date.today()
+    exp_date = dt_mod.date.fromisoformat(expiration_date)
+    years_to_exp = max((exp_date - today).days, 0) / 365.0
+
+    def compute_delta(strike: float, iv, option_type: str):
+        try:
+            if not iv or iv <= 0 or years_to_exp <= 0:
+                return None
+            bs = get_bs_info(s=price, x=float(strike), r=0.05, vol=float(iv), years_to_maturity=years_to_exp)
+            return round(bs.put_delta if option_type == "put" else bs.call_delta, 4)
+        except Exception:
+            return None
+
+    def _rows(df, option_type: str):
+        rows = []
+        for _, row in df.iterrows():
+            iv = row.get("impliedVolatility")
+            rows.append(
+                {
+                    "strike": float(row["strike"]),
+                    "bid": float(row.get("bid") or 0.0),
+                    "ask": float(row.get("ask") or 0.0),
+                    "lastPrice": float(row.get("lastPrice") or 0.0),
+                    "volume": row.get("volume"),
+                    "openInterest": row.get("openInterest"),
+                    "impliedVolatility": float(iv) if iv else None,
+                    "delta": compute_delta(row["strike"], iv, option_type),
+                    "gamma": None,
+                    "theta": None,
+                    "vega": None,
+                }
+            )
+        return sorted(rows, key=lambda r: r["strike"])
+
+    return {
+        "current_price": price,
+        "puts": _rows(chain.puts, "put"),
+        "calls": _rows(chain.calls, "call"),
+        "data_source": _yfinance_data_source_label(),
+        "source_note": source_note,
+    }
 
 # Screens chosen for likely options liquidity -- Yahoo's screener has ~19 predefined
 # queries total (see yfinance.PREDEFINED_SCREENER_QUERIES), most of which are mutual
@@ -244,58 +411,103 @@ async def get_stock_screener(query: str = "most_actives", count: int = SCREENER_
 
 
 @mcp.tool()
+async def get_custom_watchlist() -> str:
+    """Get the user's own hand-picked candidate tickers from watchlist.txt.
+
+    This is a plain text file (one ticker per line, '#' comments allowed) that
+    the person running this trading floor edits directly -- add or remove
+    tickers any time; changes take effect on your very next cycle since this
+    reads the file fresh on every call, no restart needed.
+
+    Like get_stock_screener, this is a discovery tool only: these are
+    unverified candidates, not pre-checked for optionability or liquidity.
+    Always follow up with get_options_chain(symbol) before treating any of
+    them as a real candidate, and every server-enforced rule (25-45 DTE,
+    delta, premium floor, risk cap, earnings) still applies regardless of
+    where a candidate came from -- a ticker being on this list is a suggestion
+    to consider, not an instruction to trade it.
+
+    Returns:
+        JSON with the ticker list and a count, or a friendly note (not an
+        error) if the file is missing or empty -- an empty watchlist is a
+        normal, common state, not a failure.
+    """
+    try:
+        from universe import load_custom_watchlist
+
+        tickers = load_custom_watchlist()
+        if not tickers:
+            return json.dumps(
+                {
+                    "tickers": [],
+                    "count": 0,
+                    "note": (
+                        "Your custom watchlist (watchlist.txt) is empty or doesn't exist yet. "
+                        "This is normal, not an error -- it's an optional extra candidate source "
+                        "on top of your named ETF universe and get_stock_screener. Nothing to do "
+                        "here; the person running this trading floor can add tickers to "
+                        "watchlist.txt at any time."
+                    ),
+                }
+            )
+        return json.dumps(
+            {
+                "tickers": tickers,
+                "count": len(tickers),
+                "note": (
+                    "Unverified candidates from the user's own hand-picked watchlist -- call "
+                    "get_options_chain(symbol) before treating any of these as a real candidate, "
+                    "same as get_stock_screener's results."
+                ),
+            }
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
 async def get_options_chain(
     symbol: str,
     expiration_date: str = ""
 ) -> str:
-    """Get real options chain data from yfinance.
-    
+    """Get a real options chain: real broker data from Schwab's Market Data API
+    when configured, falling back automatically to yfinance otherwise (or on any
+    Schwab failure). Every response carries a "data_source" field so it's always
+    visible which one actually supplied the numbers -- "schwab", "yfinance", or
+    "yfinance (schwab fallback)".
+
     Retrieves actual market data for available options contracts.
     Always call this without an expiration_date first to see the available dates,
     then call again with the chosen expiration_date to get the full chain.
-    
+
     Args:
         symbol: Stock ticker (e.g., "SPY", "QQQ")
         expiration_date: Specific expiration (YYYY-MM-DD) or empty to list available dates
-    
+
     Returns:
-        JSON with available strikes, prices, Greeks, implied volatility, and delta
+        JSON with available strikes, prices, open interest, implied volatility, and
+        delta for each strike (delta is Schwab's real broker-reported value when
+        data_source is "schwab", else computed via Black-Scholes). Deliberately does
+        NOT include gamma/theta/vega here -- none of your rules ever need them at the
+        per-strike level, only delta (the 0.20 band) and open interest/premium; the
+        fuller Greeks for your actual chosen spread are in analyze_credit_spread's
+        output instead, where it's one spread, not up to 50 strikes.
     """
     try:
-        import yfinance as yf
-        import datetime as dt_mod
-
-        def _fetch():
-            t = yf.Ticker(symbol)
-            exps = t.options  # all available expiration dates as strings
-            if not exps:
-                raise ValueError(f"No options available for {symbol}")
-            price = t.fast_info.get("lastPrice", 0)
-            return t, exps, price
-
-        t, all_exps, current_price = fetch_with_timeout(_fetch, timeout_seconds=30)
-
         today = dt_mod.date.today()
         min_date = today + dt_mod.timedelta(days=25)
         max_date = today + dt_mod.timedelta(days=45)
 
-        # Filter to expirations in the valid 25-45 day window
-        valid_exps = []
-        for e in all_exps:
-            try:
-                d = dt_mod.date.fromisoformat(e)
-                days = (d - today).days
-                if 25 <= days <= 45:
-                    valid_exps.append({"date": e, "days_to_expiration": days})
-            except ValueError:
-                pass
-
         # If no expiration_date specified, return the list of valid dates only
         if not expiration_date:
-            return json.dumps({
+            current_price, valid_exps, data_source, source_note = _fetch_valid_expirations(
+                symbol, min_date, max_date
+            )
+            result = {
                 "symbol": symbol,
                 "current_price": current_price,
                 "today": str(today),
+                "data_source": data_source,
                 "valid_expiration_window": f"{min_date} to {max_date} (25-45 days out)",
                 "valid_expirations": valid_exps,
                 "instruction": (
@@ -303,7 +515,10 @@ async def get_options_chain(
                     "with that expiration_date to see strikes, premiums, and Greeks. "
                     "Do NOT use any expiration not listed here."
                 ) if valid_exps else "No expirations fall in the 25-45 day window for this symbol. Try a different underlying."
-            }, indent=2)
+            }
+            if source_note:
+                result["source_note"] = source_note
+            return json.dumps(result, indent=2)
 
         # Validate the requested expiration is in the valid window
         try:
@@ -312,59 +527,69 @@ async def get_options_chain(
         except ValueError:
             return json.dumps({"error": f"Invalid expiration_date format: '{expiration_date}'. Use YYYY-MM-DD."})
 
-        if days_to_exp < 25:
-            return json.dumps({
-                "error": f"Expiration {expiration_date} is only {days_to_exp} days away — too soon. "
-                         f"Valid window is {min_date} to {max_date}. "
-                         f"Valid expirations for {symbol}: {[e['date'] for e in valid_exps] or 'none in window'}"
-            })
-        if days_to_exp > 45:
-            return json.dumps({
-                "error": f"Expiration {expiration_date} is {days_to_exp} days away — too far out. "
-                         f"Valid window is {min_date} to {max_date}. "
-                         f"Valid expirations for {symbol}: {[e['date'] for e in valid_exps] or 'none in window'}"
-            })
-
-        def _fetch_chain():
-            return t.option_chain(expiration_date)
-
-        chain = fetch_with_timeout(_fetch_chain, timeout_seconds=30)
-        puts  = chain.puts
-        calls = chain.calls
-
-        # yfinance's raw chain never includes a "delta" column -- Yahoo's options API
-        # doesn't provide Greeks at all, only price/volume/IV. Compute real delta
-        # ourselves via Black-Scholes (same approach analyze_credit_spread uses) so
-        # there's an actual number to check strike selection against, instead of a
-        # column that silently never existed.
-        from optionlab.black_scholes import get_bs_info
-        years_to_exp = days_to_exp / 365.0
-
-        def compute_delta(strike: float, iv: float, option_type: str) -> float | None:
+        if days_to_exp < 25 or days_to_exp > 45:
             try:
-                if not iv or iv <= 0 or years_to_exp <= 0:
-                    return None
-                bs = get_bs_info(s=float(current_price), x=float(strike), r=0.05, vol=float(iv), years_to_maturity=years_to_exp)
-                return round(bs.put_delta if option_type == "put" else bs.call_delta, 4)
+                _, valid_exps, _, _ = _fetch_valid_expirations(symbol, min_date, max_date)
+                valid_list = [e["date"] for e in valid_exps] or "none in window"
             except Exception:
-                return None
+                valid_list = "(unable to fetch)"
+            too = "only" if days_to_exp < 25 else ""
+            direction = "too soon" if days_to_exp < 25 else "too far out"
+            return json.dumps({
+                "error": f"Expiration {expiration_date} is {too} {days_to_exp} days away — {direction}. "
+                         f"Valid window is {min_date} to {max_date}. "
+                         f"Valid expirations for {symbol}: {valid_list}"
+            })
 
-        def extract(df, option_type: str):
-            cols = ["strike", "lastPrice", "bid", "ask", "volume", "impliedVolatility"]
-            records = df[cols].to_dict("records")[:25]
-            for rec in records:
-                rec["delta"] = compute_delta(rec["strike"], rec.get("impliedVolatility"), option_type)
-            return records
+        chain = _fetch_chain(symbol, expiration_date)
+
+        def _round(v, ndigits):
+            return round(v, ndigits) if isinstance(v, (int, float)) else v
+
+        def _public(rows):
+            # FIXED: this used to include gamma/theta/vega whenever a record had them
+            # (previously that meant "never, on yfinance" -- now that Schwab is
+            # actually configured and working, it means "always, with real values").
+            # None of Cathie's rules ever check gamma/theta/vega at the per-strike
+            # listing level -- only delta (the 0.20 band) and open interest/premium
+            # matter here; the fuller Greeks she does use for her chosen spread are
+            # already in analyze_credit_spread's output, which is one spread, not up
+            # to 50 strikes. Reproduced live: switching from yfinance to a working
+            # Schwab connection alone was enough to blow gpt-4o-mini's context window
+            # again in the new-trade pass (3-5 candidates x up to 2 calls each x up to
+            # 50 real, non-null Greek values per call), the same class of bug as the
+            # get_stock_screener context overflow in CLAUDE.md's history -- so drop
+            # gamma/theta/vega here unconditionally, not just when null, and round the
+            # remaining floats to keep each record as compact as the old yfinance-only
+            # payload regardless of which source supplied it.
+            out = []
+            for r in rows[:25]:
+                out.append(
+                    {
+                        "strike": r["strike"],
+                        "lastPrice": _round(r["lastPrice"], 2),
+                        "bid": _round(r["bid"], 2),
+                        "ask": _round(r["ask"], 2),
+                        "volume": r["volume"],
+                        "openInterest": r["openInterest"],
+                        "impliedVolatility": _round(r["impliedVolatility"], 4),
+                        "delta": _round(r["delta"], 4),
+                    }
+                )
+            return out
 
         result = {
             "symbol": symbol,
-            "current_price": current_price,
+            "current_price": chain["current_price"],
             "today": str(today),
             "expiration_date": expiration_date,
             "days_to_expiration": days_to_exp,
-            "puts":  extract(puts, "put"),
-            "calls": extract(calls, "call"),
+            "data_source": chain["data_source"],
+            "puts": _public(chain["puts"]),
+            "calls": _public(chain["calls"]),
         }
+        if chain["source_note"]:
+            result["source_note"] = chain["source_note"]
 
         return json.dumps(result, indent=2, default=str)
 
@@ -381,7 +606,10 @@ async def analyze_credit_spread(
     expiration_date: str,
     contracts: int = 1
 ) -> str:
-    """Analyze a credit spread using OptionLab for accurate P/L and Greeks.
+    """Analyze a credit spread using OptionLab for accurate P/L and probability of
+    profit, priced off real market data -- Schwab's Market Data API when configured,
+    falling back automatically to yfinance otherwise (or on any Schwab failure; see
+    "data_source" in the response).
 
     IMPORTANT: Call get_options_chain first to see available strikes and expiration dates.
     This tool will automatically snap to the nearest available strike if your requested
@@ -399,58 +627,42 @@ async def analyze_credit_spread(
         contracts: Number of spreads (start with 1-3)
 
     Returns:
-        JSON with max profit, max loss, breakeven, probability of profit, Greeks
+        JSON with max profit, max loss, breakeven, probability of profit, Greeks.
+        Greeks are Schwab's own real, broker-reported values when data_source is
+        "schwab"; otherwise (a yfinance path) they're computed via Black-Scholes,
+        since yfinance's raw chain has no Greeks at all.
     """
     try:
-        import yfinance as yf
         import datetime as dt
         from optionlab.models import Inputs
         from optionlab.black_scholes import get_bs_info
         from optionlab import run_strategy
 
-        # Fetch price + options chain with timeout to prevent MCP server hang
-        def _fetch_market_data():
-            t = yf.Ticker(symbol)
-            price = t.fast_info.get("lastPrice") or t.history(period="1d")["Close"].iloc[-1]
-            chain = t.option_chain(expiration_date)
-            return float(price), chain
+        chain = _fetch_chain(symbol, expiration_date)
+        current_price = chain["current_price"]
+        option_type = "put" if spread_type == "bull_put" else "call"
+        rows = chain["puts"] if option_type == "put" else chain["calls"]
 
-        current_price, chain = fetch_with_timeout(_fetch_market_data, timeout_seconds=30)
-
-        if spread_type == "bull_put":
-            option_type = "put"
-            df = chain.puts
-        else:  # bear_call
-            option_type = "call"
-            df = chain.calls
-
-        if df.empty:
+        if not rows:
             return json.dumps({"error": f"No {option_type} options available for {symbol} on {expiration_date}"})
 
         # Snap to nearest available strikes rather than failing on exact match
-        available_strikes = df['strike'].values
-        actual_short = available_strikes[abs(available_strikes - short_strike).argmin()]
-        actual_long  = available_strikes[abs(available_strikes - long_strike).argmin()]
-
-        short_row = df[df['strike'] == actual_short]
-        long_row  = df[df['strike'] == actual_long]
-
-        if short_row.empty or long_row.empty:
-            return json.dumps({"error": "Could not find options at specified strikes"})
+        short_row = min(rows, key=lambda r: abs(r["strike"] - short_strike))
+        long_row  = min(rows, key=lambda r: abs(r["strike"] - long_strike))
 
         # Warn if we snapped to different strikes
         snapped = {}
-        if actual_short != short_strike:
-            snapped["short_strike_adjusted"] = f"{short_strike} -> {actual_short}"
-        if actual_long != long_strike:
-            snapped["long_strike_adjusted"] = f"{long_strike} -> {actual_long}"
-        short_strike = actual_short
-        long_strike  = actual_long
+        if short_row["strike"] != short_strike:
+            snapped["short_strike_adjusted"] = f"{short_strike} -> {short_row['strike']}"
+        if long_row["strike"] != long_strike:
+            snapped["long_strike_adjusted"] = f"{long_strike} -> {long_row['strike']}"
+        short_strike = short_row["strike"]
+        long_strike  = long_row["strike"]
 
         # Use midpoint of bid/ask for fair value
-        short_premium = (short_row.iloc[0]['bid'] + short_row.iloc[0]['ask']) / 2
-        long_premium  = (long_row.iloc[0]['bid']  + long_row.iloc[0]['ask'])  / 2
-        iv = float(short_row.iloc[0]['impliedVolatility'])
+        short_premium = (short_row["bid"] + short_row["ask"]) / 2
+        long_premium  = (long_row["bid"]  + long_row["ask"])  / 2
+        iv = float(short_row["impliedVolatility"] or 0.0)
 
         # Guard: zero or near-zero premium means the option is illiquid or too far OTM
         if short_premium <= 0.01:
@@ -473,7 +685,7 @@ async def analyze_credit_spread(
                          f"or try a different underlying with higher implied volatility."
             })
 
-        # Guard: zero IV means yfinance returned bad data for this expiration
+        # Guard: zero IV means the data source returned bad data for this expiration
         if iv <= 0.001:
             return json.dumps({
                 "error": f"Implied volatility is zero for strike {short_strike} on {expiration_date}. "
@@ -491,7 +703,8 @@ async def analyze_credit_spread(
 
         years_to_exp = dte / 365.0
 
-        # --- OptionLab: P/L profile + probability of profit ---
+        # --- OptionLab: P/L profile + probability of profit (source-independent --
+        # just needs strikes/premiums/IV/dates, same math regardless of who supplied them) ---
         price_range = abs(short_strike - long_strike) * 4
         inputs = Inputs(
             stock_price=float(current_price),
@@ -514,20 +727,35 @@ async def analyze_credit_spread(
             for r in result_ol.profit_ranges
         ]
 
-        # --- Black-Scholes Greeks ---
-        short_bs = get_bs_info(s=float(current_price), x=short_strike, r=0.05, vol=iv, years_to_maturity=years_to_exp)
-        long_bs  = get_bs_info(s=float(current_price), x=long_strike,  r=0.05, vol=iv, years_to_maturity=years_to_exp)
-
-        if option_type == "put":
-            short_leg_delta = round(short_bs.put_delta, 4)
-            net_delta = round(long_bs.put_delta  - short_bs.put_delta,  4)
-            net_theta = round(short_bs.put_theta - long_bs.put_theta,   4)
+        # --- Greeks: Schwab's own real, broker-reported values when available (it
+        # returns delta/gamma/theta/vega directly per contract); otherwise fall back
+        # to Black-Scholes, since yfinance's raw chain has no Greeks at all. ---
+        if (
+            chain["data_source"] == "schwab"
+            and short_row["delta"] is not None
+            and long_row["delta"] is not None
+        ):
+            short_leg_delta = round(short_row["delta"], 4)
+            net_delta = round(long_row["delta"] - short_row["delta"], 4)
+            net_theta = round((short_row["theta"] or 0.0) - (long_row["theta"] or 0.0), 4)
+            net_vega  = round((long_row["vega"]  or 0.0) - (short_row["vega"]  or 0.0), 4)
+            net_gamma = round((long_row["gamma"] or 0.0) - (short_row["gamma"] or 0.0), 4)
+            greeks_source = "schwab (real, broker-reported)"
         else:
-            short_leg_delta = round(short_bs.call_delta, 4)
-            net_delta = round(long_bs.call_delta  - short_bs.call_delta, 4)
-            net_theta = round(short_bs.call_theta - long_bs.call_theta,  4)
-        net_vega  = round(long_bs.vega  - short_bs.vega,  4)
-        net_gamma = round(long_bs.gamma - short_bs.gamma, 4)
+            short_bs = get_bs_info(s=float(current_price), x=short_strike, r=0.05, vol=iv, years_to_maturity=years_to_exp)
+            long_bs  = get_bs_info(s=float(current_price), x=long_strike,  r=0.05, vol=iv, years_to_maturity=years_to_exp)
+
+            if option_type == "put":
+                short_leg_delta = round(short_bs.put_delta, 4)
+                net_delta = round(long_bs.put_delta  - short_bs.put_delta,  4)
+                net_theta = round(short_bs.put_theta - long_bs.put_theta,   4)
+            else:
+                short_leg_delta = round(short_bs.call_delta, 4)
+                net_delta = round(long_bs.call_delta  - short_bs.call_delta, 4)
+                net_theta = round(short_bs.call_theta - long_bs.call_theta,  4)
+            net_vega  = round(long_bs.vega  - short_bs.vega,  4)
+            net_gamma = round(long_bs.gamma - short_bs.gamma, 4)
+            greeks_source = "Black-Scholes (yfinance has no Greeks)"
 
         # P/L summary (net_premium_per_spread already computed above)
         net_premium_per_spread = round(short_premium - long_premium, 4)
@@ -550,6 +778,7 @@ async def analyze_credit_spread(
             "expiration_date": expiration_date,
             "days_to_expiration": dte,
             "contracts": contracts,
+            "data_source": chain["data_source"],
             "implied_volatility": f"{iv*100:.1f}%",
             "premium": {
                 "short_leg": round(short_premium, 2),
@@ -566,6 +795,7 @@ async def analyze_credit_spread(
             "probability_of_profit": f"{pop:.1f}%",
             "risk_assessment": "High PoP" if pop >= 65 else "Moderate PoP" if pop >= 50 else "Low PoP",
             "greeks": {
+                "source": greeks_source,
                 "short_leg_delta": short_leg_delta,
                 "net_delta": net_delta,
                 "net_theta": net_theta,
@@ -573,6 +803,8 @@ async def analyze_credit_spread(
                 "net_gamma": net_gamma,
             },
         }
+        if chain["source_note"]:
+            result["source_note"] = chain["source_note"]
 
         return json.dumps(result, indent=2)
 
@@ -839,10 +1071,13 @@ async def sell_credit_spread(
                 "max_profit": f"${net_premium:.2f}"
             },
             "account_summary": options_account.summary(),
-            "message": f"Successfully opened {contracts} {spread_type} spread(s) on {symbol}"
+            "message": f"Successfully opened {contracts} {spread_type} spread(s) on {symbol}",
+            "data_source": analysis.get("data_source"),
         }
         if earnings_warning:
             result["earnings_check_warning"] = earnings_warning
+        if analysis.get("source_note"):
+            result["source_note"] = analysis["source_note"]
 
         return json.dumps(result, indent=2)
         
@@ -881,8 +1116,6 @@ async def close_credit_spread(
         Confirmation with P&L realized
     """
     try:
-        import yfinance as yf
-        import datetime as dt_mod
         from options_models import OptionsAccount
         from database import read_account, write_account, write_log
 
@@ -916,50 +1149,40 @@ async def close_credit_spread(
 
         # Fetch current market prices AND the underlying's current price together --
         # need both to verify whether a close is actually justified, not just take the
-        # LLM's word for it via `reason`.
+        # LLM's word for it via `reason`. Real Schwab data when configured, falling
+        # back to yfinance automatically (or on any Schwab failure) -- same source
+        # priority as get_options_chain/analyze_credit_spread.
         market_data_available = False
         current_price = None
         closing_cost = None
         try:
-            def _fetch():
-                t = yf.Ticker(position.symbol)
-                chain = t.option_chain(position.expiration_date)
-                price = t.fast_info.get("lastPrice")
-                if not price:
-                    price = float(t.history(period="1d")["Close"].iloc[-1])
-                return chain, float(price)
+            chain = _fetch_chain(position.symbol, position.expiration_date)
+            current_price = chain["current_price"]
+            rows = chain["puts"] if position.spread_type == "bull_put" else chain["calls"]
 
-            chain, current_price = fetch_with_timeout(_fetch, timeout_seconds=30)
-            df = chain.puts if position.spread_type == "bull_put" else chain.calls
+            short_row = min(rows, key=lambda r: abs(r["strike"] - position.short_leg.strike))
+            long_row  = min(rows, key=lambda r: abs(r["strike"] - position.long_leg.strike))
 
-            available = df['strike'].values
-            short_strike = available[abs(available - position.short_leg.strike).argmin()]
-            long_strike  = available[abs(available - position.long_leg.strike).argmin()]
+            short_bid_q, short_ask_q = short_row["bid"], short_row["ask"]
+            long_bid_q,  long_ask_q  = long_row["bid"],  long_row["ask"]
 
-            short_row = df[df['strike'] == short_strike]
-            long_row  = df[df['strike'] == long_strike]
-
-            if not short_row.empty and not long_row.empty:
-                short_bid_q, short_ask_q = float(short_row.iloc[0]['bid']), float(short_row.iloc[0]['ask'])
-                long_bid_q,  long_ask_q  = float(long_row.iloc[0]['bid']),  float(long_row.iloc[0]['ask'])
-
-                # Guard: a 0/0 bid-ask on a leg is not a real quote, it's yfinance's way of
-                # saying no market maker has an active price right now -- routinely true
-                # outside regular trading hours, or for a thin/deep-OTM strike, not proof the
-                # option is worth nothing. Trusting it as-is silently turned "no live data"
-                # into a fabricated $0.00 closing cost, which trivially satisfies the
-                # 75%-captured profit rule below and force-closes a position that was never
-                # actually verified against a real price. Require at least one nonzero side
-                # on each leg before treating this as a usable quote; otherwise fall through
-                # to the existing (correct) "no market data" handling below, which assumes
-                # breakeven rather than fabricating a gain.
-                if (short_bid_q > 0 or short_ask_q > 0) and (long_bid_q > 0 or long_ask_q > 0):
-                    # Cost to close = buy back short + sell back long
-                    short_ask = (short_bid_q + short_ask_q) / 2
-                    long_bid  = (long_bid_q  + long_ask_q)  / 2
-                    closing_cost = (short_ask - long_bid) * 100 * position.short_leg.contracts
-                    price_source = "live market"
-                    market_data_available = True
+            # Guard: a 0/0 bid-ask on a leg is not a real quote, it's the data source's way
+            # of saying no market maker has an active price right now -- routinely true
+            # outside regular trading hours, or for a thin/deep-OTM strike, not proof the
+            # option is worth nothing. Trusting it as-is silently turned "no live data"
+            # into a fabricated $0.00 closing cost, which trivially satisfies the
+            # 75%-captured profit rule below and force-closes a position that was never
+            # actually verified against a real price. Require at least one nonzero side
+            # on each leg before treating this as a usable quote; otherwise fall through
+            # to the existing (correct) "no market data" handling below, which assumes
+            # breakeven rather than fabricating a gain.
+            if (short_bid_q > 0 or short_ask_q > 0) and (long_bid_q > 0 or long_ask_q > 0):
+                # Cost to close = buy back short + sell back long
+                short_ask = (short_bid_q + short_ask_q) / 2
+                long_bid  = (long_bid_q  + long_ask_q)  / 2
+                closing_cost = (short_ask - long_bid) * 100 * position.short_leg.contracts
+                price_source = f"live market ({chain['data_source']})"
+                market_data_available = True
         except Exception:
             pass  # handled below -- no fabricated "estimate", we just don't have data
 

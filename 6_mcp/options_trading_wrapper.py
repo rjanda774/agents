@@ -40,6 +40,18 @@ try:
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(f"optionlab OK: {optionlab.__version__}\n"); f.flush()
 
+    # schwab-py is optional -- options_trading_server.py falls back to yfinance
+    # automatically if it's missing or unconfigured, so a failure here is logged
+    # (not FATAL, unlike the imports above) to make a broken/missing install visible
+    # without blocking the server from starting at all.
+    try:
+        import schwab
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"schwab-py OK: {schwab.__version__ if hasattr(schwab, '__version__') else 'installed'}\n"); f.flush()
+    except Exception as e:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"schwab-py NOT available ({e}) -- will fall back to yfinance for all options data.\n"); f.flush()
+
     from options_trading_server import mcp as trading_mcp
     with open(log_file, "a", encoding="utf-8") as f:
         f.write("options_trading_server imported OK\n")
