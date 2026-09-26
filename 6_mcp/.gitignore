@@ -5,3 +5,7 @@ __pycache__/
 .venv/
 schwab_token.json
 .trading_floor.lock
+.tradealgo_profile/
+.tradealgo_fetch_state.json
+tradealgo_darkpool.json
+tradealgo_discovery.json

@@ -7,3 +7,7 @@ __pycache__/
 6_mcp/memory/*.db
 schwab_token.json
 .trading_floor.lock
+.tradealgo_profile/
+.tradealgo_fetch_state.json
+tradealgo_darkpool.json
+tradealgo_discovery.json
