@@ -20,7 +20,8 @@ inside 6_mcp/. One-time setup:
 
 Modes:
     uv run tradealgo_scraper.py login
-        Opens a browser window on TradeAlgo. Log in by hand, then press Enter
+        Opens a browser window on TradeAlgo (the first time, type your usual
+        TradeAlgo address into it -- it's remembered). Log in by hand, then press Enter
         in the terminal. The session is saved to a private browser profile
         (.tradealgo_profile/, gitignored) so later runs stay logged in.
 
@@ -59,7 +60,10 @@ DISCOVERY_PATH = os.path.join(HERE, "tradealgo_discovery.json")
 CACHE_PATH = os.path.join(HERE, "tradealgo_darkpool.json")
 STATE_PATH = os.path.join(HERE, ".tradealgo_fetch_state.json")
 
-TRADEALGO_HOME = os.getenv("TRADEALGO_HOME_URL", "https://app.tradealgo.com")
+# Where `login`/`discover` open the browser. No built-in default -- the one originally
+# guessed (app.tradealgo.com) doesn't exist. If unset, the first `login` asks you to
+# type your usual TradeAlgo address into the browser window, then remembers it.
+TRADEALGO_HOME = os.getenv("TRADEALGO_HOME_URL")
 TRADEALGO_PAGE_URL = os.getenv("TRADEALGO_PAGE_URL")
 TRADEALGO_DATA_URL_CONTAINS = os.getenv("TRADEALGO_DATA_URL_CONTAINS")
 # Only for environments where Playwright's own bundled Chromium isn't installed
@@ -193,6 +197,59 @@ def _open_context(playwright, headless: bool):
     return context
 
 
+def _home_file() -> str:
+    return os.path.join(PROFILE_DIR, "home_url.txt")
+
+
+def _get_home_url() -> str | None:
+    if TRADEALGO_HOME:
+        return TRADEALGO_HOME
+    try:
+        with open(_home_file(), "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _remember_home(page_url: str) -> str:
+    parts = urlsplit(page_url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    with open(_home_file(), "w", encoding="utf-8") as f:
+        f.write(origin)
+    return origin
+
+
+def _is_web_page(url: str) -> bool:
+    return urlsplit(url).scheme in ("http", "https")
+
+
+def _open_start_page(page, url: str | None):
+    """Navigate to `url`. If there's no address yet, or it doesn't load, leave the
+    window open for you to type the right address yourself instead of crashing.
+
+    Returns (loaded, page) -- `page` may be a fresh tab replacing the original."""
+    from playwright.sync_api import Error as PlaywrightError
+
+    if not url:
+        print("\nNo TradeAlgo address saved yet. In the browser window, type the address you "
+              "normally use to log in to TradeAlgo into the address bar.")
+        return False, page
+    try:
+        page.goto(url)
+        return True, page
+    except PlaywrightError as e:
+        print(f"\nCouldn't open {url} ({str(e).splitlines()[0]}).\n"
+              "In the browser window, type the address you normally use for TradeAlgo into "
+              "the address bar instead. (To stop seeing this, fix or remove TRADEALGO_HOME_URL "
+              "in .env.)")
+        # Chromium commits its own error page a moment after a failed load, and that can
+        # cut off whatever navigation comes next in the same tab. Swap in a fresh tab so
+        # nothing is left pending.
+        fresh = page.context.new_page()
+        page.close()
+        return False, fresh
+
+
 def _save_session(context) -> None:
     """Persist cookies (including session cookies) for the next run. Called only
     after a run that was actually logged in, so a logged-out run can't overwrite a
@@ -205,7 +262,7 @@ def _looks_logged_out(url: str) -> bool:
     return any(word in path for word in ("login", "signin", "sign-in", "sign_in", "auth"))
 
 
-def _wait_for_enter(prompt: str) -> None:
+def _wait_for_enter(prompt: str, page=None) -> None:
     input(prompt)
 
 
@@ -215,17 +272,22 @@ def run_login(headless: bool = False, wait=_wait_for_enter) -> None:
     with sync_playwright() as p:
         context = _open_context(p, headless)
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(TRADEALGO_HOME)
+        _, page = _open_start_page(page, _get_home_url())
         wait(
-            "\nA browser window opened on TradeAlgo. Log in there by hand (this script\n"
-            "never sees your password), wait until your dashboard loads, then press Enter here... "
+            "\nLog in to TradeAlgo in the browser window by hand (this script never sees\n"
+            "your password), wait until your dashboard loads, then press Enter here... ",
+            page,
         )
-        if _looks_logged_out(page.url):
+        if not _is_web_page(page.url) or _looks_logged_out(page.url):
             context.close()
-            raise NotLoggedInError("Still on a login page -- log in fully, then press Enter.")
+            raise NotLoggedInError(
+                "The browser isn't on a logged-in TradeAlgo page -- run `login` again and wait "
+                "for your dashboard before pressing Enter."
+            )
         _save_session(context)
+        home = _remember_home(page.url)
         context.close()
-    print(f"Saved your TradeAlgo session to {PROFILE_DIR}")
+    print(f"Saved your TradeAlgo session to {PROFILE_DIR} (TradeAlgo address: {home})")
 
 
 def run_discover(headless: bool = False, wait=_wait_for_enter, start_url: str | None = None) -> dict:
@@ -256,14 +318,27 @@ def run_discover(headless: bool = False, wait=_wait_for_enter, start_url: str | 
         context = _open_context(p, headless)
         context.on("response", on_response)
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(start_url or TRADEALGO_HOME)
-        if _looks_logged_out(page.url):
+        loaded, page = _open_start_page(page, start_url or _get_home_url())
+        if loaded and _looks_logged_out(page.url):
             context.close()
             raise NotLoggedInError("Not logged in -- run `uv run tradealgo_scraper.py login` first.")
         wait(
             "\nIn the browser window, go to TradeAlgo's dark-pool page and let it fully load\n"
-            "(scroll a little if the table loads more as you go). Then press Enter here... "
+            "(scroll a little if the table loads more as you go). Then press Enter here... ",
+            page,
         )
+        if not _is_web_page(page.url) or _looks_logged_out(page.url):
+            context.close()
+            raise NotLoggedInError(
+                "The browser isn't on a logged-in TradeAlgo page -- run `login` first, then "
+                "`discover` again."
+            )
+        # Enter may come before the page's own data requests finish -- give them a moment
+        # so they're captured. A page that never goes quiet (live-updating) is fine too.
+        try:
+            page.wait_for_load_state("networkidle", timeout=10_000)
+        except Exception:
+            pass
         final_page_url = mask_url(page.url)
         _save_session(context)
         context.close()
@@ -341,10 +416,15 @@ def main(argv: list[str]) -> int:
     if len(argv) != 2 or argv[1] not in modes:
         print(__doc__)
         return 2
+    from playwright.sync_api import Error as PlaywrightError
+
     try:
         modes[argv[1]]()
     except (RateCapError, NotLoggedInError, RuntimeError) as e:
         print(f"ERROR: {e}")
+        return 1
+    except PlaywrightError as e:
+        print(f"ERROR: browser problem: {str(e).splitlines()[0]}")
         return 1
     return 0
 
