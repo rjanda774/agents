@@ -101,6 +101,20 @@ def _finite_or(v, default=None):
     return f if math.isfinite(f) else default
 
 
+def _regular_session_open(now: datetime | None = None) -> tuple[bool, str]:
+    """(is the US stock market in its regular session right now, current time in ET).
+
+    Regular session = Monday-Friday, 9:30-16:00 America/New_York. Clock-based only, so
+    it doesn't know about exchange holidays or early closes -- a holiday weekday counts
+    as open here."""
+    from zoneinfo import ZoneInfo
+
+    et = ZoneInfo("America/New_York")
+    now_et = (now or datetime.now(et)).astimezone(et)
+    is_open = now_et.weekday() < 5 and dt_mod.time(9, 30) <= now_et.time() < dt_mod.time(16, 0)
+    return is_open, now_et.strftime("%a %Y-%m-%d %H:%M ET")
+
+
 def _yfinance_data_source_label() -> str:
     """Label to attach to a yfinance-sourced response -- distinguishes "Schwab was
     never configured" from "Schwab was configured but this particular call fell
@@ -1250,6 +1264,22 @@ async def close_credit_spread(
             if position.net_premium_collected:
                 profit_trigger = closing_cost <= 0.25 * position.net_premium_collected
 
+        # HARD ENFORCEMENT: breach and profit exits act on prices, so only during the
+        # regular session. Overnight/pre/after-market underlying prints are thin, and
+        # option quotes don't update at all outside regular hours, so they're stale.
+        # Observed live: ORCL dipped to $133 overnight, below a $135 short put, and this
+        # tool closed the spread at 00:52 ET for a -$185 loss; ORCL was back at ~$138
+        # by the next day. The 7-day rule depends only on the date, so it still applies
+        # at any hour.
+        session_open, market_time = _regular_session_open()
+        held_until_open = []
+        if not session_open:
+            if breach_trigger:
+                held_until_open.append("short strike breached")
+            if profit_trigger:
+                held_until_open.append("profit target")
+            breach_trigger = profit_trigger = False
+
         if not (expiry_trigger or breach_trigger or profit_trigger):
             detail = (
                 f"current price ${current_price:.2f} vs short strike {position.short_leg.strike} "
@@ -1259,11 +1289,23 @@ async def close_credit_spread(
                 if market_data_available else
                 "live market data was unavailable to check the breach/profit conditions."
             )
+            hours_note = ""
+            if not session_open:
+                hours_note = (
+                    f" It's {market_time}, outside regular market hours (Mon-Fri 9:30-16:00 ET): "
+                    "breach and profit exits are only acted on during regular hours, when prices "
+                    "and option quotes are live."
+                )
+                if held_until_open:
+                    hours_note += (
+                        f" At these off-hours prices, {' and '.join(held_until_open)} would apply "
+                        "-- re-check during market hours."
+                    )
             return json.dumps({
                 "error": (
                     f"CLOSE REJECTED: no exit rule applies to position {position_id} yet. "
-                    f"Days to expiration: {days_to_exp} (need <=7 to force-close). {detail} "
-                    f"Leave this position open."
+                    f"Days to expiration: {days_to_exp} (need <=7 to force-close). {detail}"
+                    f"{hours_note} Leave this position open."
                 )
             })
 
@@ -1274,16 +1316,45 @@ async def close_credit_spread(
             closing_cost = position.net_premium_collected
             price_source = "ESTIMATED (market data unavailable) -- assumed breakeven, forced close at DTE<=7"
 
+        # Which rule(s) actually justified this close, as verified above -- recorded in
+        # the ledger, the log and the response, because the model's own `reason` can't be
+        # trusted (ORCL 2026-09-29 was logged as "DTE <= 7 days" with 17 days left; it
+        # was really a breach close).
+        rules = []
+        if expiry_trigger:
+            rules.append(f"7 or fewer days to expiration ({days_to_exp} left)")
+        if breach_trigger:
+            op, leg = ("<=", "put") if position.spread_type == "bull_put" else (">=", "call")
+            rules.append(
+                f"short strike breached ({position.symbol} ${current_price:.2f} {op} "
+                f"{position.short_leg.strike} short {leg})"
+            )
+        if profit_trigger:
+            rules.append(
+                f"profit target (closing cost ${closing_cost:.2f} <= 25% of "
+                f"${position.net_premium_collected:.2f} premium)"
+            )
+        close_rule = "; ".join(rules)
+        underlying_price = round(float(current_price), 2) if market_data_available else None
+
         # Close the position
         closed = options_account.close_spread(position_id, closing_cost)
         if not closed:
             return json.dumps({"error": f"Failed to close position {position_id}"})
+        closed.close_rule = close_rule
+        closed.underlying_price_at_close = underlying_price
 
         write_account(f"{name.lower()}_options", options_account.model_dump())
 
         pnl = closed.profit_loss()
         pct_captured = (pnl / position.net_premium_collected * 100) if position.net_premium_collected else 0
-        write_log(name, "account", f"Closed {position.spread_type} on {position.symbol} | P&L ${pnl:.2f} ({pct_captured:.1f}% captured) | reason: {reason}")
+        price_text = f"${underlying_price:.2f}" if underlying_price is not None else "unavailable"
+        write_log(
+            name, "account",
+            f"Closed {position.spread_type} on {position.symbol} | P&L ${pnl:.2f} "
+            f"({pct_captured:.1f}% captured) | rule: {close_rule} | {position.symbol} price "
+            f"{price_text} at {market_time} ({price_source}) | model's stated reason: {reason}"
+        )
 
         return json.dumps({
             "status": "POSITION CLOSED",
@@ -1295,7 +1366,14 @@ async def close_credit_spread(
             "realized_pnl": f"${pnl:.2f}",
             "pct_premium_captured": f"{pct_captured:.1f}%",
             "price_source": price_source,
+            "close_rule": close_rule,
+            "underlying_price": underlying_price,
+            "checked_at": market_time,
             "reason": reason,
+            "note": (
+                "close_rule is the exit rule the server actually verified; when you report "
+                "this close, give close_rule as the reason, not your own `reason` text."
+            ),
             "account_summary": options_account.summary()
         }, indent=2)
 
