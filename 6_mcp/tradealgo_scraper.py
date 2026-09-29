@@ -257,9 +257,29 @@ def _save_session(context) -> None:
     context.storage_state(path=_session_file())
 
 
+_LOGIN_SEGMENTS = {"login", "log-in", "signin", "sign-in", "sign_in", "auth", "sso", "oauth"}
+
+
 def _looks_logged_out(url: str) -> bool:
-    path = urlsplit(url).path.lower()
-    return any(word in path for word in ("login", "signin", "sign-in", "sign_in", "auth"))
+    # Whole path segments only (e.g. /login, /auth/callback), not substrings -- a
+    # plain substring check for "auth" also matched ordinary logged-in app pages.
+    segments = [s for s in urlsplit(url).path.lower().split("/") if s]
+    return any(seg in _LOGIN_SEGMENTS or seg.startswith(("login", "signin")) for seg in segments)
+
+
+def _logged_in_page(context):
+    """The most recently opened tab that's on a real, non-login web page -- or None.
+    Checks every tab, since the login may happen in a new tab or a popup rather than
+    the one this script opened."""
+    for page in reversed(context.pages):
+        if _is_web_page(page.url) and not _looks_logged_out(page.url):
+            return page
+    return None
+
+
+def _describe_tabs(context) -> str:
+    urls = [mask_url(p.url) if _is_web_page(p.url) else p.url for p in context.pages]
+    return "; ".join(urls) or "(no tabs open)"
 
 
 def _wait_for_enter(prompt: str, page=None) -> None:
@@ -278,11 +298,14 @@ def run_login(headless: bool = False, wait=_wait_for_enter) -> None:
             "your password), wait until your dashboard loads, then press Enter here... ",
             page,
         )
-        if not _is_web_page(page.url) or _looks_logged_out(page.url):
+        page = _logged_in_page(context)
+        if page is None:
+            tabs = _describe_tabs(context)
             context.close()
             raise NotLoggedInError(
-                "The browser isn't on a logged-in TradeAlgo page -- run `login` again and wait "
-                "for your dashboard before pressing Enter."
+                "No open tab was on a logged-in TradeAlgo page when you pressed Enter "
+                f"(open tabs: {tabs}). Run `login` again and wait for your dashboard before "
+                "pressing Enter."
             )
         _save_session(context)
         home = _remember_home(page.url)
@@ -327,11 +350,13 @@ def run_discover(headless: bool = False, wait=_wait_for_enter, start_url: str | 
             "(scroll a little if the table loads more as you go). Then press Enter here... ",
             page,
         )
-        if not _is_web_page(page.url) or _looks_logged_out(page.url):
+        page = _logged_in_page(context)
+        if page is None:
+            tabs = _describe_tabs(context)
             context.close()
             raise NotLoggedInError(
-                "The browser isn't on a logged-in TradeAlgo page -- run `login` first, then "
-                "`discover` again."
+                f"No open tab was on a logged-in TradeAlgo page (open tabs: {tabs}). Run "
+                "`login` first, then `discover` again."
             )
         # Enter may come before the page's own data requests finish -- give them a moment
         # so they're captured. A page that never goes quiet (live-updating) is fine too.
