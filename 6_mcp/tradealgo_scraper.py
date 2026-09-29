@@ -33,12 +33,15 @@ Modes:
         URL segments masked -- so it's safe to share for building the parser.
 
     uv run tradealgo_scraper.py fetch
-        Headless, no window. Loads TRADEALGO_PAGE_URL, captures the data
-        request matching TRADEALGO_DATA_URL_CONTAINS, and saves it to
-        tradealgo_darkpool.json. Enforces the twice-a-day cap. Meant to be
+        Headless, no window. Loads TradeAlgo's two dark-pool pages (Intraday
+        and Historical -- see FETCH_SOURCES), captures each page's own data
+        request, and saves a compact per-ticker summary to
+        tradealgo_darkpool.json (the Intraday page's 20 tickers, and the first
+        20 on the Historical page). Enforces the twice-a-day cap. Meant to be
         scheduled (e.g. Windows Task Scheduler), not run by the trading floor
         itself -- a scraper problem should never be able to stall a trading
-        cycle. Both env vars are set in .env once discovery has identified them.
+        cycle. Cathie reads the saved file via options_trading_server.py's
+        get_dark_pool_activity tool, never TradeAlgo directly.
 
 Deliberately independent of the trading floor: nothing here is imported by
 trading_floor.py or any MCP server.
@@ -58,14 +61,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROFILE_DIR = os.path.join(HERE, ".tradealgo_profile")
 DISCOVERY_PATH = os.path.join(HERE, "tradealgo_discovery.json")
 CACHE_PATH = os.path.join(HERE, "tradealgo_darkpool.json")
+# Last fetch's unparsed responses, kept only to debug the parser if TradeAlgo changes shape.
+RAW_PATH = os.path.join(HERE, ".tradealgo_darkpool_raw.json")
 STATE_PATH = os.path.join(HERE, ".tradealgo_fetch_state.json")
 
 # Where `login`/`discover` open the browser. No built-in default -- the one originally
 # guessed (app.tradealgo.com) doesn't exist. If unset, the first `login` asks you to
 # type your usual TradeAlgo address into the browser window, then remembers it.
 TRADEALGO_HOME = os.getenv("TRADEALGO_HOME_URL")
-TRADEALGO_PAGE_URL = os.getenv("TRADEALGO_PAGE_URL")
-TRADEALGO_DATA_URL_CONTAINS = os.getenv("TRADEALGO_DATA_URL_CONTAINS")
+# What `fetch` captures, identified from the user's `discover` run (2026-09-29): both
+# dark-pool pages, each loading one JSON request. Env vars override if TradeAlgo moves them.
+FETCH_SOURCES = [
+    {
+        "name": "intraday",  # today's flagged tickers: 10 trending up + 10 trending down
+        "page": os.getenv("TRADEALGO_PAGE_URL", "https://dashboard.tradealgo.com/home/Intraday/Auto/Up"),
+        "match": os.getenv("TRADEALGO_DATA_URL_CONTAINS", "/ats/darkflow"),
+    },
+    {
+        "name": "historical",  # longer list; includes tickers flagged on earlier days
+        "page": os.getenv(
+            "TRADEALGO_HISTORY_PAGE_URL", "https://dashboard.tradealgo.com/historical/Auto/Up"
+        ),
+        "match": os.getenv("TRADEALGO_HISTORY_DATA_URL_CONTAINS", "/ats/historic/daily-darkflow"),
+    },
+]
+HISTORY_LIMIT = 20  # "the first 20 tickers" from the historical page, as the user asked
 # Only for environments where Playwright's own bundled Chromium isn't installed
 # (e.g. a sandbox with a system Chromium). Normal use: leave unset and run
 # `uv run playwright install chromium` once.
@@ -405,59 +425,175 @@ def run_discover(
     return report
 
 
-def run_fetch(headless: bool = True, now: dt.datetime | None = None) -> dict:
-    if not (TRADEALGO_PAGE_URL and TRADEALGO_DATA_URL_CONTAINS):
-        raise RuntimeError(
-            "TRADEALGO_PAGE_URL and TRADEALGO_DATA_URL_CONTAINS aren't set in .env yet -- "
-            "run `discover` first so the right page and data request can be identified."
+# ---------------------------------------------------------------- parsing
+# Field names come from the user's discovery output; values were never seen from here,
+# so every lookup is defensive (missing/odd fields become None rather than errors).
+
+def _get(d, *path):
+    for key in path:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(key)
+    return d
+
+
+def _num(v, ndigits=2):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return int(round(f)) if ndigits == 0 else round(f, ndigits)
+
+
+def _flag_fields(rec: dict) -> dict:
+    """The compact per-ticker summary shared by both pages. Drops the chart arrays
+    (hundreds of numbers per ticker) and duplicated nested ticker/date fields."""
+    return {
+        "ticker": rec.get("ticker"),
+        "name": rec.get("name"),
+        "multiplier": rec.get("multiplier"),
+        "dollar_value": rec.get("dollar_value"),
+        "date_flagged": rec.get("date_flagged"),
+        "perf": _num(rec.get("perf"), 4),
+        "last_price": _num(rec.get("last_price")),
+        "algo_price": _num(rec.get("algo_price")),
+        "market_cap": rec.get("market_cap"),
+        "dark_pool": {
+            "date": _get(rec, "ats", "date"),
+            "day_trades": _num(_get(rec, "ats", "current", "day_trades"), 0),
+            "day_volume": _num(_get(rec, "ats", "current", "day_volume"), 0),
+            "day_dollar_volume": _num(_get(rec, "ats", "current", "day_dollar_volume"), 0),
+            "prev_day_dollar_volume": _num(_get(rec, "ats", "previous", "day_dollar_volume"), 0),
+            "compared_day_dollar_volume": _num(_get(rec, "ats", "compared", "day_dollar_volume"), 4),
+            "compared_day_volume": _num(_get(rec, "ats", "compared", "day_volume"), 4),
+        },
+        "options_flow": {
+            "date": _get(rec, "options", "date"),
+            "call_count": _num(_get(rec, "options", "call_count"), 0),
+            "call_total_prem": _num(_get(rec, "options", "call_total_prem"), 0),
+            "put_count": _num(_get(rec, "options", "put_count"), 0),
+            "put_total_prem": _num(_get(rec, "options", "put_total_prem"), 0),
+            "put_to_call": _num(_get(rec, "options", "put_to_call"), 3),
+            "flow_sentiment": _num(_get(rec, "options", "flow_sentiment"), 3),
+        },
+        "ai": {
+            "sentiment": _get(rec, "ai_score", "sentiment"),
+            "bull_score": _num(_get(rec, "ai_score", "bull_score"), 3),
+            "bear_score": _num(_get(rec, "ai_score", "bear_score"), 3),
+        },
+    }
+
+
+def parse_intraday(payload) -> list[dict]:
+    """/ats/darkflow -> [{direction: up|down, ...}], in the page's own order."""
+    out = []
+    if not isinstance(payload, dict):
+        return out
+    for key, direction in (("trending_up", "up"), ("trending_down", "down")):
+        for rec in payload.get(key) or []:
+            if isinstance(rec, dict) and rec.get("ticker"):
+                out.append({"direction": direction, **_flag_fields(rec)})
+    return out
+
+
+def parse_historical(payload, limit: int = HISTORY_LIMIT) -> list[dict]:
+    """/ats/historic/daily-darkflow -> first `limit` entries, in the page's own order."""
+    out = []
+    for rec in payload if isinstance(payload, list) else []:
+        if not (isinstance(rec, dict) and rec.get("ticker")):
+            continue
+        inner = rec.get("json_record") if isinstance(rec.get("json_record"), dict) else {}
+        summary = _flag_fields({**inner, "ticker": rec.get("ticker")})
+        summary.update(
+            name=rec.get("company_name") or summary["name"],
+            date_added=rec.get("date_added"),
+            added_price=rec.get("added_price"),
+            date_removed=rec.get("date_remove"),
+            removed_price=rec.get("removed_price"),
+            performance=rec.get("performance"),
+            trending_status=rec.get("trending_status"),
         )
+        out.append(summary)
+        if len(out) >= limit:
+            break
+    return out
+
+
+_PARSERS = {"intraday": parse_intraday, "historical": parse_historical}
+
+
+def _write_json_atomic(path: str, data) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)  # a reader never sees a half-written file
+
+
+def run_fetch(headless: bool = True, now: dt.datetime | None = None) -> dict:
     check_rate_cap(now)
 
     from playwright.sync_api import sync_playwright
 
+    results, raw, errors = {}, {}, {}
     with sync_playwright() as p:
         context = _open_context(p, headless)
         page = None
         try:
             page = context.pages[0] if context.pages else context.new_page()
-            record_attempt(now)  # counted before the request goes out -- see check_rate_cap
-            with page.expect_response(
-                lambda r: TRADEALGO_DATA_URL_CONTAINS in r.url, timeout=FETCH_TIMEOUT_MS
-            ) as resp_info:
-                page.goto(TRADEALGO_PAGE_URL)
-            # The data request arriving is what proves the session is live -- the page
-            # address alone can't (some sites keep "signin" in it after login).
-            resp = resp_info.value
-            if resp.status in (401, 403):
-                raise NotLoggedInError(
-                    "TradeAlgo rejected the saved session (HTTP "
-                    f"{resp.status}) -- run `uv run tradealgo_scraper.py login` again."
-                )
-            if not resp.ok:
-                raise RuntimeError(f"Data request returned HTTP {resp.status}.")
-            payload = resp.json()
-            _save_session(context)  # cookies may have been rotated/refreshed
-        except Exception as e:
-            if page is not None and _looks_logged_out(page.url):
-                raise NotLoggedInError(
-                    "TradeAlgo session expired -- run `uv run tradealgo_scraper.py login` again."
-                ) from e
-            raise
+            record_attempt(now)  # counted before any request goes out -- see check_rate_cap
+            for src in FETCH_SOURCES:
+                try:
+                    with page.expect_response(
+                        lambda r, m=src["match"]: m in r.url, timeout=FETCH_TIMEOUT_MS
+                    ) as resp_info:
+                        page.goto(src["page"])
+                    # The data request arriving is what proves the session is live -- the
+                    # page address alone can't (TradeAlgo keeps "signin" in it at times).
+                    resp = resp_info.value
+                    if resp.status in (401, 403):
+                        raise NotLoggedInError(
+                            f"TradeAlgo rejected the saved session (HTTP {resp.status}) -- "
+                            "run `uv run tradealgo_scraper.py login` again."
+                        )
+                    if not resp.ok:
+                        raise RuntimeError(f"data request returned HTTP {resp.status}")
+                    payload = resp.json()
+                    raw[src["name"]] = payload
+                    results[src["name"]] = {
+                        "source_url": mask_url(resp.url),
+                        "tickers": _PARSERS[src["name"]](payload),
+                    }
+                except NotLoggedInError:
+                    raise
+                except Exception as e:
+                    if _looks_logged_out(page.url):
+                        raise NotLoggedInError(
+                            "TradeAlgo session expired -- run `uv run tradealgo_scraper.py login` again."
+                        ) from e
+                    # One page failing shouldn't throw away the other page's data.
+                    errors[src["name"]] = str(e).splitlines()[0]
+            if results:
+                _save_session(context)  # cookies may have been rotated/refreshed
         finally:
             context.close()
 
+    if not results:
+        raise RuntimeError(f"Neither TradeAlgo page returned data: {errors}")
+
     cache = {
         "fetched_at": (now or dt.datetime.now()).isoformat(timespec="seconds"),
-        "source_url": mask_url(resp.url),
-        # Parsed into normalized records once discovery shows the real field names;
-        # until then the raw response is kept so nothing fetched is wasted.
-        "raw": payload,
+        **results,
     }
-    tmp = CACHE_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cache, f)
-    os.replace(tmp, CACHE_PATH)  # atomic: a reader never sees a half-written file
-    print(f"Saved TradeAlgo data to {CACHE_PATH}.")
+    if errors:
+        cache["errors"] = errors
+    _write_json_atomic(CACHE_PATH, cache)
+    _write_json_atomic(RAW_PATH, raw)
+    counts = ", ".join(f"{k}: {len(v['tickers'])} tickers" for k, v in results.items())
+    print(f"Saved TradeAlgo data to {CACHE_PATH} ({counts}).")
+    for name, err in errors.items():
+        print(f"WARNING: {name} page failed: {err}")
     return cache
 
 

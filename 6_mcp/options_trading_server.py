@@ -497,6 +497,78 @@ async def get_custom_watchlist() -> str:
         return json.dumps({"error": str(e)})
 
 
+DARK_POOL_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tradealgo_darkpool.json")
+DARK_POOL_STALE_HOURS = 30  # fetched twice a trading day; older than this means fetches stopped
+
+
+@mcp.tool()
+async def get_dark_pool_activity(symbol: str = "") -> str:
+    """Get TradeAlgo's dark-pool ("DarkFlow") activity: tickers with unusual off-exchange
+    (dark-pool / ATS) buying or selling, plus each one's options flow and TradeAlgo's AI
+    sentiment. Fetched from the user's own TradeAlgo account twice a trading day and read
+    here from a saved file -- no network call, so this is cheap.
+
+    Two lists:
+      - "intraday": today's flagged tickers, each with direction "up" (dark-pool activity
+        alongside an up trend) or "down".
+      - "historical": the first 20 entries of TradeAlgo's longer list, which includes
+        tickers flagged on EARLIER days -- check date_added / date_flagged before treating
+        one as current.
+
+    How to use it: a research signal to weigh, like get_market_regime -- not a trade
+    instruction. Heavy dark-pool buying plus an up trend can support a bull put spread's
+    bullish bias; heavy selling plus a down trend can support a bear call spread. Tickers
+    here are unverified candidates: confirm each with get_options_chain before treating it
+    as real, and every server-enforced rule (25-45 DTE, delta, premium floor, risk cap,
+    earnings) still applies regardless of where a ticker came from.
+
+    Args:
+        symbol: Optional ticker (e.g. "NVDA") to look up just that one. Empty returns all.
+
+    Returns:
+        JSON with fetched_at, age_hours, a "stale" flag, and the matching tickers -- or a
+        friendly note (not an error) if no TradeAlgo data has been fetched yet.
+    """
+    try:
+        if not os.path.exists(DARK_POOL_CACHE_PATH):
+            return json.dumps({
+                "note": (
+                    "No TradeAlgo dark-pool data has been fetched yet. That's fine -- carry on "
+                    "with your other candidate sources."
+                )
+            })
+        with open(DARK_POOL_CACHE_PATH, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+
+        fetched_at = cache.get("fetched_at")
+        age_hours = None
+        try:
+            age_hours = round((datetime.now() - datetime.fromisoformat(fetched_at)).total_seconds() / 3600, 1)
+        except (TypeError, ValueError):
+            pass
+        stale = age_hours is None or age_hours > DARK_POOL_STALE_HOURS
+
+        want = symbol.strip().upper()
+        result = {"fetched_at": fetched_at, "age_hours": age_hours, "stale": stale}
+        for section in ("intraday", "historical"):
+            tickers = (cache.get(section) or {}).get("tickers") or []
+            if want:
+                tickers = [t for t in tickers if str(t.get("ticker", "")).upper() == want]
+            result[section] = tickers
+        if stale:
+            result["stale_note"] = (
+                f"This data is {age_hours} hours old (or its age is unknown) -- the scheduled "
+                "fetch may have stopped. Treat it as out of date."
+            )
+        if want and not (result["intraday"] or result["historical"]):
+            result["note"] = f"{want} isn't on TradeAlgo's dark-pool lists in the latest fetch."
+        if cache.get("errors"):
+            result["fetch_errors"] = cache["errors"]
+        return json.dumps(result, separators=(",", ":"))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 @mcp.tool()
 async def get_options_chain(
     symbol: str,

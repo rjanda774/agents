@@ -11,3 +11,4 @@ schwab_token.json
 .tradealgo_fetch_state.json
 tradealgo_darkpool.json
 tradealgo_discovery.json
+.tradealgo_darkpool_raw.json
