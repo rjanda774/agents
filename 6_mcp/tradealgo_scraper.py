@@ -85,7 +85,7 @@ FETCH_SOURCES = [
         "match": os.getenv("TRADEALGO_HISTORY_DATA_URL_CONTAINS", "/ats/historic/daily-darkflow"),
     },
 ]
-HISTORY_LIMIT = 20  # "the first 20 tickers" from the historical page, as the user asked
+HISTORY_LIMIT = 20  # "the first 20 tickers" on the Historical page, as the user asked
 # Only for environments where Playwright's own bundled Chromium isn't installed
 # (e.g. a sandbox with a system Chromium). Normal use: leave unset and run
 # `uv run playwright install chromium` once.
@@ -498,26 +498,51 @@ def parse_intraday(payload) -> list[dict]:
     return out
 
 
+def _irregular_vol(rec: dict) -> float:
+    """The Historical page's "Irregular Vol" column (json_record.multiplier, a numeric
+    string such as '3485.38...'). 0 when missing/unparseable, so those sort last."""
+    inner = rec.get("json_record") if isinstance(rec.get("json_record"), dict) else {}
+    return _num(re.sub(r"[^0-9.]", "", str(inner.get("multiplier") or ""))) or 0.0
+
+
+def _pct(v):
+    """Percent change as a number, whether sent as 0.43, "0.43" or "0.43%"."""
+    return _num(re.sub(r"[^0-9.\-]", "", str(v)) if v is not None else None, 4)
+
+
 def parse_historical(payload, limit: int = HISTORY_LIMIT) -> list[dict]:
-    """/ats/historic/daily-darkflow -> first `limit` entries, in the page's own order."""
-    out = []
+    """/ats/historic/daily-darkflow -> the top `limit` rows as TradeAlgo's Historical page
+    ("Historic ATS Gainers & Losers", Up view) shows them.
+
+    The request returns every entry unsorted and unfiltered; the page itself (confirmed
+    against the user's live data and screenshot, 2026-09-29): keeps one entry per ticker
+    -- the one with the highest Irregular Vol -- then, on the Up view, keeps only
+    gainers (percent change > 0) and sorts by Irregular Vol, highest first. Taking the
+    raw response's first rows instead matched nothing on the page."""
+    best: dict[str, dict] = {}
     for rec in payload if isinstance(payload, list) else []:
         if not (isinstance(rec, dict) and rec.get("ticker")):
             continue
+        t = rec["ticker"]
+        if t not in best or _irregular_vol(rec) > _irregular_vol(best[t]):
+            best[t] = rec
+    gainers = [r for r in best.values() if (_pct(r.get("performance")) or 0) > 0]
+    gainers.sort(key=_irregular_vol, reverse=True)
+
+    out = []
+    for rec in gainers[:limit]:
         inner = rec.get("json_record") if isinstance(rec.get("json_record"), dict) else {}
         summary = _flag_fields({**inner, "ticker": rec.get("ticker")})
         summary.update(
             name=rec.get("company_name") or summary["name"],
+            irregular_vol=round(_irregular_vol(rec), 2),
+            percent_change=_pct(rec.get("performance")),
             date_added=rec.get("date_added"),
             added_price=rec.get("added_price"),
             date_removed=rec.get("date_remove"),
             removed_price=rec.get("removed_price"),
-            performance=rec.get("performance"),
-            trending_status=rec.get("trending_status"),
         )
         out.append(summary)
-        if len(out) >= limit:
-            break
     return out
 
 
