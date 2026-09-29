@@ -286,7 +286,30 @@ def _wait_for_enter(prompt: str, page=None) -> None:
     input(prompt)
 
 
-def run_login(headless: bool = False, wait=_wait_for_enter) -> None:
+def _ask_yes_no(prompt: str, page=None) -> bool:
+    return input(prompt).strip().lower() in ("y", "yes")
+
+
+def _pick_page(context, confirm):
+    """The tab to treat as logged in, or None.
+
+    Address patterns are only a hint: some sites keep "signin" (or similar) in the
+    address even after you're logged in. You're at the keyboard in `login`/`discover`,
+    so when the address looks like a sign-in page, ask rather than refuse outright."""
+    page = _logged_in_page(context)
+    if page is not None:
+        return page
+    web_tabs = [p for p in reversed(context.pages) if _is_web_page(p.url)]
+    if web_tabs and confirm(
+        f"\nThe tab's address ({mask_url(web_tabs[0].url)}) looks like a sign-in page.\n"
+        "Are you logged in and looking at your TradeAlgo dashboard/page right now? [y/N] ",
+        web_tabs[0],
+    ):
+        return web_tabs[0]
+    return None
+
+
+def run_login(headless: bool = False, wait=_wait_for_enter, confirm=_ask_yes_no) -> None:
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
@@ -298,7 +321,7 @@ def run_login(headless: bool = False, wait=_wait_for_enter) -> None:
             "your password), wait until your dashboard loads, then press Enter here... ",
             page,
         )
-        page = _logged_in_page(context)
+        page = _pick_page(context, confirm)
         if page is None:
             tabs = _describe_tabs(context)
             context.close()
@@ -313,7 +336,9 @@ def run_login(headless: bool = False, wait=_wait_for_enter) -> None:
     print(f"Saved your TradeAlgo session to {PROFILE_DIR} (TradeAlgo address: {home})")
 
 
-def run_discover(headless: bool = False, wait=_wait_for_enter, start_url: str | None = None) -> dict:
+def run_discover(
+    headless: bool = False, wait=_wait_for_enter, start_url: str | None = None, confirm=_ask_yes_no
+) -> dict:
     from playwright.sync_api import sync_playwright
 
     seen: dict[tuple, dict] = {}
@@ -341,16 +366,13 @@ def run_discover(headless: bool = False, wait=_wait_for_enter, start_url: str | 
         context = _open_context(p, headless)
         context.on("response", on_response)
         page = context.pages[0] if context.pages else context.new_page()
-        loaded, page = _open_start_page(page, start_url or _get_home_url())
-        if loaded and _looks_logged_out(page.url):
-            context.close()
-            raise NotLoggedInError("Not logged in -- run `uv run tradealgo_scraper.py login` first.")
+        _, page = _open_start_page(page, start_url or _get_home_url())
         wait(
             "\nIn the browser window, go to TradeAlgo's dark-pool page and let it fully load\n"
             "(scroll a little if the table loads more as you go). Then press Enter here... ",
             page,
         )
-        page = _logged_in_page(context)
+        page = _pick_page(context, confirm)
         if page is None:
             tabs = _describe_tabs(context)
             context.close()
@@ -403,10 +425,13 @@ def run_fetch(headless: bool = True, now: dt.datetime | None = None) -> dict:
                 lambda r: TRADEALGO_DATA_URL_CONTAINS in r.url, timeout=FETCH_TIMEOUT_MS
             ) as resp_info:
                 page.goto(TRADEALGO_PAGE_URL)
+            # The data request arriving is what proves the session is live -- the page
+            # address alone can't (some sites keep "signin" in it after login).
             resp = resp_info.value
-            if _looks_logged_out(page.url):
+            if resp.status in (401, 403):
                 raise NotLoggedInError(
-                    "TradeAlgo session expired -- run `uv run tradealgo_scraper.py login` again."
+                    "TradeAlgo rejected the saved session (HTTP "
+                    f"{resp.status}) -- run `uv run tradealgo_scraper.py login` again."
                 )
             if not resp.ok:
                 raise RuntimeError(f"Data request returned HTTP {resp.status}.")
