@@ -512,8 +512,9 @@ async def get_dark_pool_activity(symbol: str = "") -> str:
       - "intraday": today's flagged tickers, each with direction "up" (dark-pool activity
         alongside an up trend) or "down".
       - "historical": TradeAlgo's "Historic ATS Gainers" -- the top 20 tickers flagged in
-        an EARLIER session (check date_added) that were up afterwards (percent_change > 0),
-        ranked by irregular_vol, how unusual their dark-pool volume was.
+        an EARLIER session (check from_time) whose price rose from first flagged
+        (from_price) to last unflagged (to_price) -- percent_change > 0 -- ranked by
+        irregular_vol, how unusual their dark-pool volume was.
 
     How to use it: a research signal to weigh, like get_market_regime -- not a trade
     instruction. Heavy dark-pool buying plus an up trend can support a bull put spread's

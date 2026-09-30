@@ -514,33 +514,47 @@ def parse_historical(payload, limit: int = HISTORY_LIMIT) -> list[dict]:
     """/ats/historic/daily-darkflow -> the top `limit` rows as TradeAlgo's Historical page
     ("Historic ATS Gainers & Losers", Up view) shows them.
 
-    The request returns every entry unsorted and unfiltered; the page itself (confirmed
-    against the user's live data and screenshot, 2026-09-29): keeps one entry per ticker
-    -- the one with the highest Irregular Vol -- then, on the Up view, keeps only
-    gainers (percent change > 0) and sorts by Irregular Vol, highest first. Taking the
-    raw response's first rows instead matched nothing on the page."""
-    best: dict[str, dict] = {}
+    The request returns every flag/unflag entry for the session, unsorted; the page
+    merges each ticker's entries into ONE row -- From = the price when it was first
+    flagged, To = the price when it was last unflagged, percent change between those,
+    Irregular Vol = the highest of its entries -- shows the Up view as the tickers whose
+    whole-session change is positive, and sorts by Irregular Vol. Confirmed against the
+    user's live data (2026-09-30): BEKE's page row reads +0.47%, which is its first
+    entry's From ($16.865) to its last entry's To ($16.945), while none of its three
+    individual entries shows +0.47%."""
+    by_ticker: dict[str, list[dict]] = {}
     for rec in payload if isinstance(payload, list) else []:
-        if not (isinstance(rec, dict) and rec.get("ticker")):
-            continue
-        t = rec["ticker"]
-        if t not in best or _irregular_vol(rec) > _irregular_vol(best[t]):
-            best[t] = rec
-    gainers = [r for r in best.values() if (_pct(r.get("performance")) or 0) > 0]
-    gainers.sort(key=_irregular_vol, reverse=True)
+        if isinstance(rec, dict) and rec.get("ticker"):
+            by_ticker.setdefault(rec["ticker"], []).append(rec)
+
+    merged = []
+    for ticker, recs in by_ticker.items():
+        first = min(recs, key=lambda r: str(r.get("date_added") or ""))
+        last = max(recs, key=lambda r: str(r.get("date_remove") or r.get("date_added") or ""))
+        top = max(recs, key=_irregular_vol)  # the entry whose dark-pool detail is shown
+        from_price, to_price = _num(first.get("added_price"), 4), _num(last.get("removed_price"), 4)
+        if from_price and to_price is not None:
+            change = round((to_price / from_price - 1) * 100, 2)
+        else:  # no usable prices: fall back to the single entry's own figure
+            change = _pct(top.get("performance"))
+        merged.append((top, first, last, change, from_price, to_price, len(recs)))
+
+    gainers = [m for m in merged if (m[3] or 0) > 0]
+    gainers.sort(key=lambda m: _irregular_vol(m[0]), reverse=True)
 
     out = []
-    for rec in gainers[:limit]:
-        inner = rec.get("json_record") if isinstance(rec.get("json_record"), dict) else {}
-        summary = _flag_fields({**inner, "ticker": rec.get("ticker")})
+    for top, first, last, change, from_price, to_price, n in gainers[:limit]:
+        inner = top.get("json_record") if isinstance(top.get("json_record"), dict) else {}
+        summary = _flag_fields({**inner, "ticker": top.get("ticker")})
         summary.update(
-            name=rec.get("company_name") or summary["name"],
-            irregular_vol=round(_irregular_vol(rec), 2),
-            percent_change=_pct(rec.get("performance")),
-            date_added=rec.get("date_added"),
-            added_price=rec.get("added_price"),
-            date_removed=rec.get("date_remove"),
-            removed_price=rec.get("removed_price"),
+            name=top.get("company_name") or summary["name"],
+            irregular_vol=round(_irregular_vol(top), 2),
+            percent_change=change,
+            from_price=from_price,
+            from_time=first.get("date_added"),
+            to_price=to_price,
+            to_time=last.get("date_remove"),
+            times_flagged=n,
         )
         out.append(summary)
     return out
