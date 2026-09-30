@@ -517,11 +517,12 @@ def parse_historical(payload, limit: int = HISTORY_LIMIT) -> list[dict]:
     The request returns every flag/unflag entry for the session, unsorted; the page
     merges each ticker's entries into ONE row -- From = the price when it was first
     flagged, To = the price when it was last unflagged, percent change between those,
-    Irregular Vol = the highest of its entries -- shows the Up view as the tickers whose
+    Irregular Vol = the FIRST entry's -- shows the Up view as the tickers whose
     whole-session change is positive, and sorts by Irregular Vol. Confirmed against the
     user's live data (2026-09-30): BEKE's page row reads +0.47%, which is its first
     entry's From ($16.865) to its last entry's To ($16.945), while none of its three
-    individual entries shows +0.47%."""
+    individual entries shows +0.47%; and PS's row reads 2.03x, its first entry's
+    Irregular Vol, not its highest (5.08x) -- which is what put BURL at row 20."""
     by_ticker: dict[str, list[dict]] = {}
     for rec in payload if isinstance(payload, list) else []:
         if isinstance(rec, dict) and rec.get("ticker"):
@@ -531,7 +532,7 @@ def parse_historical(payload, limit: int = HISTORY_LIMIT) -> list[dict]:
     for ticker, recs in by_ticker.items():
         first = min(recs, key=lambda r: str(r.get("date_added") or ""))
         last = max(recs, key=lambda r: str(r.get("date_remove") or r.get("date_added") or ""))
-        top = max(recs, key=_irregular_vol)  # the entry whose dark-pool detail is shown
+        top = first  # its Irregular Vol and dark-pool detail are what the page shows
         from_price, to_price = _num(first.get("added_price"), 4), _num(last.get("removed_price"), 4)
         if from_price and to_price is not None:
             change = round((to_price / from_price - 1) * 100, 2)
