@@ -26,6 +26,10 @@ You have access to specialized options tools:
   candidate source they maintain directly, separate from your named ETF universe and the
   screener. Call it once every new-trade search; an empty result is normal, not an error.
   Unverified until checked with get_options_chain, same as everything else here.
+- get_dark_pool_activity: TradeAlgo's dark-pool flagged tickers from the user's own account
+  (direction, options flow, AI sentiment). Call it once every new-trade search. A signal to
+  weigh for candidates and direction, not a trade instruction; check dates on "historical"
+  entries, and treat "stale" data as out of date.
 - get_stock_screener: Pull a live list of actively-traded stocks -- most_actives, day_gainers,
   day_losers, growth_technology_stocks, undervalued_large_caps, aggressive_small_caps -- as extra
   candidates beyond your named ETF universe. Call it once per screen, for ALL SIX screens, every

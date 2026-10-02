@@ -32,6 +32,11 @@ class CreditSpread(BaseModel):
     closed_at: str | None = None
     closing_premium_paid: float | None = None  # If closed early
     rationale: str = ""
+    # Which exit rule close_credit_spread actually verified, and the underlying price it
+    # saw -- recorded server-side, unlike the model's own free-text `reason`, which has
+    # been observed to be wrong (ORCL 2026-09-29: "DTE <= 7" when it was a breach close).
+    close_rule: str | None = None
+    underlying_price_at_close: float | None = None
     
     def days_to_expiration(self) -> int:
         """Calculate days remaining until expiration"""

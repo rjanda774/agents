@@ -106,6 +106,13 @@ Schwab or anywhere else, regardless of which data source priced the trade.
   It's normal and not an error for this to come back empty; the user adds to it whenever they
   want to point you at something specific. Same as get_stock_screener, these are unverified --
   always follow up with get_options_chain before treating anything it returns as a real candidate.
+- get_dark_pool_activity: TradeAlgo's dark-pool ("DarkFlow") data from the user's own account --
+  tickers with unusual off-exchange buying/selling, with direction (up/down), options flow and
+  AI sentiment. Call it once every new-trade pass (cheap -- a saved file, no network call).
+  "intraday" is today's list; "historical" includes tickers flagged on earlier days, so check
+  their dates. A signal to weigh when picking candidates and direction (dark-pool buying + up
+  trend can support a bull put; selling + down trend a bear call), not a trade instruction.
+  Unverified -- follow up with get_options_chain; if it says "stale", treat it as out of date.
 - get_options_chain: Get REAL market options data (strikes, premiums, Greeks, IV)
 - analyze_credit_spread: Detailed P/L analysis using OptionLab
 - get_market_regime: A lagging Bull/Sideways/Bear trend signal for an underlying, with historical
@@ -136,6 +143,10 @@ Schwab or anywhere else, regardless of which data source priced the trade.
      trading floor specifically wants you to consider. An empty result is normal, not an error;
      when it does have tickers, give them real consideration alongside everything else here,
      not just a token glance.
+   - MANDATORY: call get_dark_pool_activity() once -- TradeAlgo's dark-pool flagged tickers,
+     from the user's own account. Consider its tickers as candidates, and for any candidate
+     that appears there, weigh its dark-pool direction when choosing bull put vs. bear call.
+     If it reports "stale" or has no data yet, note that and carry on without it.
    - MANDATORY: call get_stock_screener once for EACH of its six queries (most_actives,
      day_gainers, day_losers, growth_technology_stocks, undervalued_large_caps,
      aggressive_small_caps) before you finalize your candidate list, even if your research
@@ -407,6 +418,10 @@ MANDATORY TOOL CALLS THIS CYCLE (do not skip these, even if your research alread
   - Call get_custom_watchlist() once -- these are tickers the person running this trading floor
     specifically asked you to consider. An empty result is normal, not an error; when it does
     return tickers, give them real consideration, not just a token glance before moving on.
+  - Call get_dark_pool_activity() once -- TradeAlgo's dark-pool flagged tickers (today's
+    "intraday" list plus a "historical" list that includes earlier days -- check dates). Consider
+    its tickers as candidates and weigh a candidate's dark-pool direction when picking bull put
+    vs. bear call. If it's "stale" or empty, note that and carry on without it.
   - Call get_stock_screener ONCE FOR EACH of its six queries -- most_actives, day_gainers,
     day_losers, growth_technology_stocks, undervalued_large_caps, aggressive_small_caps -- before
     finalizing your candidate list. All six, not just one: each covers a different slice of the
@@ -418,8 +433,8 @@ MANDATORY TOOL CALLS THIS CYCLE (do not skip these, even if your research alread
     directional bias for it. Note whether it agrees or conflicts with your news research.
 
 Then check 3-5 candidates using get_options_chain(). Your named universe includes {CATHIE_ETF_UNIVERSE_TEXT},
-plus any liquid stock or ETF with price > $100 and open interest > 50, plus whatever get_custom_watchlist()
-and all six get_stock_screener calls just returned. Don't default to the same 2-3 names every cycle -- check your
+plus any liquid stock or ETF with price > $100 and open interest > 50, plus whatever get_custom_watchlist(),
+get_dark_pool_activity() and all six get_stock_screener calls just returned. Don't default to the same 2-3 names every cycle -- check your
 entity-memory tools for what you evaluated or traded in recent cycles, and deliberately consider
 genuinely different candidates unless today's research specifically favors repeating one.
 
