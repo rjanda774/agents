@@ -100,6 +100,7 @@ User decisions so far:
 - **`approve` mode first**: Cathie stages orders and the user approves each one by hand, until they trust it. Only then `live`.
 - **Money checks, re-read from Schwab before every trade** (both fluctuate): the trade's max loss must fit within the account's **Funds Available for Trading**, and the risk cap (currently 8% in `sell_credit_spread`) is computed from **Day Net Liquidating Value**, not the ledger's cash. Those are schwab.com's labels; which Trader API fields they map to is to be confirmed with `schwab_account_check.py --match <funds> <net liq>` before step 4 relies on them. Reference values at decision time: funds $10,205.34, net liq $17,935.99.
 - Account type: margin.
+- **Keep the 8% per-trade risk cap with real money** (decided 2026-10-04), now computed from Day Net Liq: about $1,435 max loss per trade at $17,935.99, up from ~$800 on the ledger's cash. The 5x-net-premium cap still applies, whichever is smaller.
 
 ## TradeAlgo dark-pool scraper (`6_mcp/tradealgo_scraper.py`)
 
