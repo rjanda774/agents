@@ -7,7 +7,9 @@ tools to pull real market data (option chains, quotes) from your Schwab
 account. It does NOT enable order placement -- there is no order-placement
 code anywhere in this project; sell_credit_spread/close_credit_spread only
 ever write to the local simulated `cathie_options` ledger in accounts.db.
-This login only grants read access to market data.
+Today the code only reads with this login: market data (schwab_client.py) and,
+once your app has the "Accounts and Trading Production" product, your account's
+balances/positions/orders (schwab_trading.py).
 
 Prerequisites:
   1. A developer.schwab.com account with an approved "Trader API - Individual"
