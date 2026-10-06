@@ -1,3 +1,8 @@
+# TEMPLATE -- copy this to watchlist.txt and edit that copy:
+#     Copy-Item watchlist.example.txt watchlist.txt
+# watchlist.txt is gitignored, so your edits never show up as git changes or
+# block a checkout/pull. Cathie reads watchlist.txt only, never this file.
+#
 # Cathie's custom watchlist -- hand-edit this file with your own candidate
 # tickers. Cathie reads it fresh every new-trade pass (get_custom_watchlist,
 # via universe.py: load_custom_watchlist), so changes here take effect on her

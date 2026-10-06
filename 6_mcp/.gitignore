@@ -10,3 +10,5 @@ schwab_token.json
 tradealgo_darkpool.json
 tradealgo_discovery.json
 .tradealgo_darkpool_raw.json
+# Your own hand-edited watchlist; watchlist.example.txt is the tracked template
+watchlist.txt
