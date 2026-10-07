@@ -4,8 +4,10 @@ balances, option positions, and recent orders. Step 1 of moving Cathie from
 simulated fills to real order execution (see CLAUDE.md, "Live trading on Schwab").
 
 THIS MODULE CANNOT PLACE, CHANGE, OR CANCEL ORDERS. It only calls schwab-py's
-get_account_numbers / get_account / get_orders_for_account. Order placement is a
-later, separate step, gated behind its own settings and your approval of each order.
+get_account_numbers / get_account / get_orders_for_account, plus preview_order
+(step 2), which asks Schwab to validate an order without sending it. Order
+placement is a later, separate step, gated behind its own settings and your
+approval of each order.
 
 Needs the "Accounts and Trading Production" API product on your developer.schwab.com
 app, in addition to Market Data. Without it, the calls here fail with HTTP 401/403
@@ -136,6 +138,108 @@ def balance_fields(account: dict) -> dict[str, float]:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[f"{group}.{key}"] = float(value)
     return out
+
+
+# Which API balance fields are schwab.com's "Funds Available for Trading" and "Day Net
+# Liquidating Value". Confirmed live 2026-10-07 with schwab_account_check.py --match:
+# the site showed $10,638.12 / $17,877.07 and these fields read $10,643.38 / $17,880.72
+# moments later (option marks move; every other field was far off). Funds Available also
+# equalled availableFundsNonMarginableTrade and buyingPowerNonMarginableTrade that day;
+# availableFunds is the one named for it.
+FUNDS_AVAILABLE_FIELD = "currentBalances.availableFunds"
+NET_LIQ_FIELD = "currentBalances.liquidationValue"
+
+# The per-trade risk cap the user chose for real money (CLAUDE.md, "Live trading on
+# Schwab"): max loss <= the smaller of 8% of Day Net Liq and 5x the net premium, and
+# always within Funds Available for Trading.
+MAX_RISK_PCT_OF_NET_LIQ = 0.08
+MAX_RISK_TO_PREMIUM_RATIO = 5.0
+
+
+def risk_balances(account: dict) -> dict:
+    """{'funds_available', 'net_liq'} from a get_account() result. Raises if either is
+    missing, rather than letting a risk check run against a guess."""
+    fields = balance_fields(account)
+    missing = [f for f in (FUNDS_AVAILABLE_FIELD, NET_LIQ_FIELD) if f not in fields]
+    if missing:
+        raise SchwabAccountError(f"Schwab account data is missing {', '.join(missing)}; can't size risk.")
+    return {"funds_available": fields[FUNDS_AVAILABLE_FIELD], "net_liq": fields[NET_LIQ_FIELD]}
+
+
+def check_spread_risk(max_loss: float, net_premium: float, balances: dict) -> list[str]:
+    """The real-money risk rules, as a list of failures (empty means it passes).
+    Amounts in dollars for the whole order (all contracts)."""
+    problems = []
+    if max_loss > balances["funds_available"]:
+        problems.append(
+            f"max loss ${max_loss:,.2f} exceeds Funds Available for Trading "
+            f"${balances['funds_available']:,.2f}"
+        )
+    pct_cap = balances["net_liq"] * MAX_RISK_PCT_OF_NET_LIQ
+    if max_loss > pct_cap:
+        problems.append(
+            f"max loss ${max_loss:,.2f} exceeds {MAX_RISK_PCT_OF_NET_LIQ:.0%} of Day Net Liq "
+            f"(${pct_cap:,.2f} of ${balances['net_liq']:,.2f})"
+        )
+    premium_cap = net_premium * MAX_RISK_TO_PREMIUM_RATIO
+    if max_loss > premium_cap:
+        problems.append(
+            f"max loss ${max_loss:,.2f} exceeds {MAX_RISK_TO_PREMIUM_RATIO:g}x the net premium "
+            f"(${premium_cap:,.2f} on ${net_premium:,.2f})"
+        )
+    return problems
+
+
+def build_open_order(spread_type: str, short_symbol: str, long_symbol: str,
+                     contracts: int, net_credit: float):
+    """A schwab-py OrderBuilder for opening a credit spread as one NET_CREDIT limit
+    order (DAY, regular session) -- never a market order. Symbols must be Schwab's own
+    contract symbols (from its option chain), not hand-built ones."""
+    from schwab.orders.options import bear_call_vertical_open, bull_put_vertical_open
+
+    if contracts < 1:
+        raise ValueError("contracts must be at least 1")
+    if not (net_credit > 0):
+        raise ValueError(f"net credit must be positive, got {net_credit}")
+    price = f"{net_credit:.2f}"
+    if spread_type == "bull_put":
+        return bull_put_vertical_open(long_symbol, short_symbol, contracts, price)
+    if spread_type == "bear_call":
+        return bear_call_vertical_open(short_symbol, long_symbol, contracts, price)
+    raise ValueError(f"spread_type must be 'bull_put' or 'bear_call', got {spread_type!r}")
+
+
+def mask_account_fields(value):
+    """Copy of a Schwab JSON response with every account-identifying value masked,
+    safe to print or paste into a chat."""
+    if isinstance(value, dict):
+        return {
+            k: (mask_account_number(v) if "account" in k.lower() and isinstance(v, (str, int)) else mask_account_fields(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [mask_account_fields(v) for v in value]
+    return value
+
+
+def preview_order(order) -> tuple[int, dict | str]:
+    """Ask Schwab to validate `order` (an OrderBuilder or its dict) WITHOUT sending it:
+    Schwab's previewOrder endpoint. Returns (HTTP status, response body with account
+    fields masked). Never raises on an HTTP error status -- a rejected preview is a
+    normal, informative result here."""
+    client = _get_client()
+    account_hash, _ = get_account_hash()
+
+    def _call():
+        resp = client.preview_order(account_hash, order)
+        try:
+            body = resp.json()
+        except Exception:
+            body = getattr(resp, "text", "") or ""
+        return resp.status_code, body
+
+    status, body = _rate_limited_call(_call)
+    return status, mask_account_fields(body)
 
 
 def parse_occ_symbol(symbol: str) -> dict | None:
