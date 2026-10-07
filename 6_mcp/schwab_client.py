@@ -230,6 +230,10 @@ def get_option_chain(symbol: str, from_date: dt.date, to_date: dt.date) -> dict:
                     iv_pct = _greek(c.get("volatility"))
                     by_exp.setdefault(exp_date_str, []).append(
                         {
+                            # Schwab's own contract symbol (OCC layout), used as-is
+                            # when building real orders so they can't name a
+                            # contract that doesn't exist.
+                            "symbol": c.get("symbol"),
                             "strike": float(c.get("strikePrice")),
                             "bid": float(c.get("bid") or 0.0),
                             "ask": float(c.get("ask") or 0.0),
