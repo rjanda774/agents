@@ -6,6 +6,7 @@ from tracers import make_trace_id
 from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
+import asyncio
 import os
 import json
 from datetime import date, datetime
@@ -190,6 +191,18 @@ class Trader:
         position review doesn't also cost the new-trade search. Pass 2's own exceptions are
         left to propagate to run()'s existing catch-all, same as the single-pass path.
         """
+        # Real trades (approve mode): update the cathie_live ledger from Schwab before
+        # Cathie looks at anything -- record fills at their real price, cancel orders
+        # working 30+ minutes, expire unapproved stagings. Code, not the model, does this.
+        # Best effort: a Schwab hiccup must never cost the cycle.
+        import live_trading
+        if live_trading.execution_mode() != "simulated":
+            try:
+                for msg in await asyncio.to_thread(live_trading.reconcile):
+                    print(f"{self.name} live: {msg}")
+            except Exception as e:
+                print(f"{self.name}: live-trade reconcile failed: {e}")
+
         strategy = await read_strategy_resource(self.name, accounts_server)
 
         account_before_close = await self.get_account_report(accounts_server)

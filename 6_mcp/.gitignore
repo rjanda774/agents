@@ -13,3 +13,4 @@ tradealgo_discovery.json
 # Your own hand-edited watchlist; watchlist.example.txt is the tracked template
 watchlist.txt
 .schwab_preview_last.json
+STOP_TRADING
