@@ -6,12 +6,13 @@ otherwise or on any Schwab failure -- every response that touches live chain
 data carries a "data_source" field ("schwab" / "yfinance" / "yfinance (schwab
 fallback)") so it's always visible which one actually supplied the numbers.
 Uses OptionLab for credit spread P/L analysis and probability-of-profit.
-Trades remain fully simulated regardless of data source: sell_credit_spread/
-close_credit_spread only ever write to the local `cathie_options` pseudo-
-account (accounts.db/options_models.py) -- there is no order-placement code
-here, against Schwab or anyone else. See CLAUDE.md and schwab_client.py for
-why ("real data, simulated fills" -- Schwab's API has no paper-trading
-sandbox of its own).
+With CATHIE_EXECUTION_MODE unset or "simulated" (the default), trades are fully
+simulated: sell_credit_spread/close_credit_spread only write to the local
+`cathie_options` pseudo-account (accounts.db/options_models.py). With "approve",
+sell_credit_spread stages a REAL trade for the user's approval instead
+(live_trading.py); nothing here ever sends an order itself -- only the user's
+approve_orders.py does, via schwab_execution.py. See CLAUDE.md, "Live trading
+on Schwab".
 Completely separate from stock trading system
 """
 from mcp.server.fastmcp import FastMCP  # type: ignore
@@ -1105,6 +1106,30 @@ async def sell_credit_spread(
                 )
             })
 
+        # REAL TRADING (CLAUDE.md, "Live trading on Schwab", step 4). In approve mode the
+        # trade is staged in the cathie_live ledger for the user to approve by hand
+        # (approve_orders.py) instead of opened on paper. The paper-cash risk cap below
+        # doesn't apply to real money: live_trading checks max loss against the real
+        # account's Funds Available and Day Net Liq, now and again at approval.
+        import live_trading
+        mode = live_trading.execution_mode()
+        if mode != "simulated":
+            if mode != "approve":
+                return json.dumps({"error": f"CATHIE_EXECUTION_MODE={mode!r} isn't supported "
+                                            "(use 'simulated' or 'approve'). Nothing was traded."})
+            if earnings_warning:
+                # Paper trades fail open on unknown earnings; real money fails closed.
+                return json.dumps({"error": f"TRADE REJECTED: {symbol}'s next earnings date can't be "
+                                            "verified right now, and real trades require it. Pick a "
+                                            "different underlying."})
+            staged = live_trading.stage(
+                symbol, spread_type, short_strike, long_strike, expiration_date, contracts,
+                net_premium / (100 * contracts), max_loss, rationale,
+            )
+            if analysis.get("data_source"):
+                staged["data_source"] = analysis["data_source"]
+            return json.dumps(staged, indent=2)
+
         # HARD ENFORCEMENT: never risk more than 8% of available cash on a single trade,
         # AND never risk more than 5x the premium actually collected for that trade --
         # both must hold, so the effective cap is whichever of the two is smaller. Raised
@@ -1245,6 +1270,16 @@ async def close_credit_spread(
     try:
         from options_models import OptionsAccount
         from database import read_account, write_account, write_log
+
+        # Real Schwab trades (approve mode) aren't closed here yet -- see CLAUDE.md step 5.
+        import live_trading
+        real = live_trading.load_ledger().get(position_id) if live_trading.execution_mode() != "simulated" else None
+        if real is not None:
+            return json.dumps({"error": (
+                f"{position_id} is a REAL Schwab trade ({real.label()}, status {real.status}). "
+                "Closing real positions isn't automated yet: the user closes it by hand in "
+                "thinkorswim. Nothing was closed. Tell the user if you think it should be closed, and why."
+            )})
 
         options_data = read_account(f"{name.lower()}_options")
         if not options_data:
@@ -1471,19 +1506,23 @@ async def get_options_positions(name: str) -> str:
         
         options_data = read_account(f"{name.lower()}_options")
         if not options_data:
-            return json.dumps({
-                "message": "No options positions yet",
+            result = {
+                "message": "No paper options positions yet",
                 "open_positions": [],
                 "closed_positions": []
-            })
-        
-        options_account = OptionsAccount(**options_data)
-        
-        result = {
-            "account_summary": options_account.summary(),
-            "open_positions": [pos.model_dump() for pos in options_account.open_positions],
-            "closed_positions": [pos.model_dump() for pos in options_account.closed_positions]
-        }
+            }
+        else:
+            options_account = OptionsAccount(**options_data)
+            result = {
+                "account_summary": options_account.summary(),
+                "open_positions": [pos.model_dump() for pos in options_account.open_positions],
+                "closed_positions": [pos.model_dump() for pos in options_account.closed_positions]
+            }
+        # Real trades (approve mode) live in their own ledger; show them alongside, clearly
+        # labelled, so Cathie doesn't re-propose a staged spread or forget a real one.
+        import live_trading
+        if live_trading.execution_mode() != "simulated":
+            result["real_schwab_trades"] = live_trading.ledger_summary()
         
         return json.dumps(result, indent=2, default=str)
         

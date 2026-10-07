@@ -1,6 +1,24 @@
 from datetime import datetime
 from market import is_paid_polygon, is_realtime_polygon
 from universe import CATHIE_ETF_UNIVERSE_TEXT
+import live_trading
+
+
+def execution_note() -> str:
+    """What sell_credit_spread really does in the current CATHIE_EXECUTION_MODE."""
+    if live_trading.execution_mode() == "approve":
+        return f"""REAL-MONEY APPROVAL MODE IS ON. sell_credit_spread does NOT open a paper position now: it
+STAGES a real trade on the user's Schwab account, which the user approves or rejects by hand. A
+successful call returns "status": "STAGED FOR APPROVAL" -- report that as "staged for approval",
+never as opened, sold or filled. Real orders are 1 contract each (use contracts=1), at most
+{live_trading.MAX_ORDERS_PER_DAY} per day and {live_trading.MAX_STAGED} waiting at once, and never on an underlying the
+user already holds options on. Real positions appear under "real_schwab_trades" in
+get_options_positions; you can't close them (the user does, in thinkorswim) -- if one meets an
+exit rule, say so in your summary. Your existing paper positions are still managed as before."""
+    return """YOUR TRADES ARE STILL
+SIMULATED: sell_credit_spread/close_credit_spread only ever update your local paper
+account (cash/positions tracked here, not at Schwab) -- no real order is ever sent to
+Schwab or anywhere else, regardless of which data source priced the trade."""
 
 if is_realtime_polygon:
     note = "You have access to realtime market data tools; use your get_last_trade tool for the latest trade price. You can also use tools for share information, trends and technical indicators and fundamentals."
@@ -82,10 +100,9 @@ bid/ask, open interest, Greeks) comes from a real Schwab brokerage account's liv
 market data feed when configured, falling back automatically to yfinance + OptionLab's
 Black-Scholes otherwise -- check the "data_source" field on get_options_chain and
 analyze_credit_spread responses ("schwab", "yfinance", or "yfinance (schwab fallback)")
-if you want to know which one supplied a given number. Either way, YOUR TRADES ARE STILL
-SIMULATED: sell_credit_spread/close_credit_spread only ever update your local paper
-account (cash/positions tracked here, not at Schwab) -- no real order is ever sent to
-Schwab or anywhere else, regardless of which data source priced the trade.
+if you want to know which one supplied a given number.
+
+{execution_note()}
 
 **Data Tools:**
 - get_stock_screener: Pull a live list of liquid, actively-traded stocks from Yahoo Finance
