@@ -13,6 +13,7 @@ mapper = {
     "generation": Color.YELLOW,
     "response": Color.MAGENTA,
     "account": Color.RED,
+    "live": Color.CYAN,  # real Schwab trades: staged, sent, filled, cancelled (live_trading.py)
 }
 
 
@@ -142,7 +143,8 @@ class Trader:
         # "function" IS shown -- it's every tool call (get_stock_screener, get_market_regime,
         # sell_credit_spread, the Researcher sub-agent, etc.), the main way to verify from
         # this panel which tools a trader actually used in a given cycle.
-        SHOW_TYPES = {"account", "generation", "response", "function"}
+        # "live" is every real-trade event (live_trading.py, CATHIE_EXECUTION_MODE=approve).
+        SHOW_TYPES = {"account", "generation", "response", "function", "live"}
         response = ""
         for log in logs:
             timestamp, type, message = log
