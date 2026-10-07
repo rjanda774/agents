@@ -1,7 +1,7 @@
 from contextlib import AsyncExitStack
 from accounts_client import read_accounts_resource, read_strategy_resource
 from accounts import Account
-from database import read_account
+from database import read_account, write_log
 from tracers import make_trace_id
 from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
 from openai import AsyncOpenAI
@@ -214,9 +214,23 @@ class Trader:
         except Exception as e:
             print(f"{self.name}: position-review pass failed: {e}")
 
+        # Code-driven spread scan (spread_scanner.py): checks every candidate source's
+        # option chains against the hard rules so Cathie picks from spreads that actually
+        # qualify, instead of hand-checking 3-5 of ~300 tickers (she was observed skipping
+        # every screener name). Best effort: a failed scan falls back to the old routine.
+        scan_report = None
+        try:
+            import spread_scanner
+            scan_report = await asyncio.to_thread(spread_scanner.scan)
+            line = spread_scanner.summary_line(scan_report)
+            print(f"{self.name}: {line}")
+            write_log(self.name, "scan", line)
+        except Exception as e:
+            print(f"{self.name}: spread scan failed: {e}")
+
         # Re-read live state so the new-trade pass sees any closes pass 1 just made.
         account_after_close = await self.get_account_report(accounts_server)
-        trade_message_text = new_trades_message(strategy, account_after_close, close_summary)
+        trade_message_text = new_trades_message(strategy, account_after_close, close_summary, scan_report)
         await Runner.run(self.agent, trade_message_text, max_turns=TRADE_PASS_MAX_TURNS)
 
     async def run_with_mcp_servers(self):

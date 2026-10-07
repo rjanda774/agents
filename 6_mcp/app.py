@@ -14,6 +14,7 @@ mapper = {
     "response": Color.MAGENTA,
     "account": Color.RED,
     "live": Color.CYAN,  # real Schwab trades: staged, sent, filled, cancelled (live_trading.py)
+    "scan": Color.WHITE,  # spread_scanner.py's per-cycle summary
 }
 
 
@@ -144,7 +145,8 @@ class Trader:
         # sell_credit_spread, the Researcher sub-agent, etc.), the main way to verify from
         # this panel which tools a trader actually used in a given cycle.
         # "live" is every real-trade event (live_trading.py, CATHIE_EXECUTION_MODE=approve).
-        SHOW_TYPES = {"account", "generation", "response", "function", "live"}
+        # "scan" is the spread scanner's one-line summary each cycle (spread_scanner.py).
+        SHOW_TYPES = {"account", "generation", "response", "function", "live", "scan"}
         response = ""
         for log in logs:
             timestamp, type, message = log

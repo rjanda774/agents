@@ -105,6 +105,10 @@ if you want to know which one supplied a given number.
 {execution_note()}
 
 **Data Tools:**
+- (Each cycle, before your new-trade pass, a code SPREAD SCANNER checks the option chains of your
+  watchlist, dark-pool tickers, ETF universe and all six Yahoo screens, and hands you the spreads that
+  pass every hard rule. Its results are in your new-trade instructions; get_stock_screener below is
+  only needed when they say the scanner didn't run.)
 - get_stock_screener: Pull a live list of liquid, actively-traded stocks from Yahoo Finance
   (most_actives, day_gainers, day_losers, growth_technology_stocks, undervalued_large_caps,
   aggressive_small_caps) as EXTRA candidate underlyings beyond your named ETF universe. Each of
@@ -164,16 +168,10 @@ if you want to know which one supplied a given number.
      from the user's own account. Consider its tickers as candidates, and for any candidate
      that appears there, weigh its dark-pool direction when choosing bull put vs. bear call.
      If it reports "stale" or has no data yet, note that and carry on without it.
-   - MANDATORY: call get_stock_screener once for EACH of its six queries (most_actives,
-     day_gainers, day_losers, growth_technology_stocks, undervalued_large_caps,
-     aggressive_small_caps) before you finalize your candidate list, even if your research
-     already turned up names you like. All six, every cycle -- not just one, and not a
-     fallback for when you're stuck. Each query surfaces a genuinely different slice of the
-     market (momentum, value, growth, small-cap); checking only one or two misses most of
-     what it offers. It returns 40 results per call by default -- do not raise `count` on
-     these calls, the default is already plenty and six calls' worth at a higher count
-     can overflow your own context window. Its results are unverified until you run them
-     through get_options_chain, same as any other candidate.
+   - The SPREAD SCANNER's results (in your new-trade instructions) are your primary
+     candidates: real spreads that already pass every hard rule. Only if those instructions
+     say the scanner didn't run, call get_stock_screener once for EACH of its six queries
+     instead, and check candidates by hand with get_options_chain.
    - Prefer underlyings with strong directional conviction (clearly bullish or clearly bearish sector/name)
    - Don't default to the same 2-3 names every cycle just because they're top-of-mind. Use your
      entity-memory tools to check what you evaluated or traded recently, and deliberately give
@@ -411,7 +409,50 @@ the tool's response actually confirmed; a false "closed" here will mislead the n
 """
 
 
-def new_trades_message(strategy, account, prior_pass_summary):
+def _scanner_section(scan_report) -> str:
+    """The new-trade instructions' candidate section: the spread scanner's results, or
+    the old by-hand routine when the scanner didn't run."""
+    import json as _json
+    if scan_report and not scan_report.get("skipped") and "top" in scan_report:
+        top = scan_report["top"]
+        header = (f"SPREAD SCANNER RESULTS (code, run just now): it checked the option chains of "
+                  f"{scan_report.get('scanned')} of {scan_report.get('candidates')} tickers -- your watchlist, "
+                  "TradeAlgo dark-pool tickers, your ETF universe and all six Yahoo screens -- and found "
+                  f"{scan_report.get('qualified')} spreads that pass every hard rule at current mid prices "
+                  "(1 contract; 25-45 DTE, short |delta| <= 0.20, open interest >= 100 on both legs, $50+ "
+                  "premium, max loss <= 5x premium and <= 8% of net liq, no earnings in the window). "
+                  "\"sources\" says where each ticker came from.")
+        if not top:
+            return header + """
+
+None qualify right now, so the expected outcome this pass is NO TRADE. Don't hand-pick other
+tickers hoping one passes -- the scanner already checked them. Report that nothing qualified."""
+        rows = "\n".join(_json.dumps(t, separators=(",", ":")) for t in top)
+        return header + f"""
+Best first, by premium / max loss:
+{rows}
+
+These are your candidates. For each one you seriously consider:
+  - Check its direction against your research, get_market_regime and its dark-pool flow: a bull_put
+    needs a neutral-to-bullish view of the underlying, a bear_call neutral-to-bearish. Skip ones
+    your research contradicts -- a good premium doesn't rescue a wrong direction.
+  - Then analyze_credit_spread and sell_credit_spread with EXACTLY that spread_type, short_strike,
+    long_strike and expiration, contracts=1. Prices move, so sell_credit_spread may still reject one;
+    if so, move to the next.
+Prefer these over hand-picking other tickers. You may still check a ticker the scanner didn't list
+with get_options_chain if your research strongly favors it, but it most likely failed a rule."""
+    reason = (scan_report or {}).get("skipped") or "it didn't run this cycle"
+    return f"""THE SPREAD SCANNER DIDN'T RUN ({reason}), so find candidates by hand:
+  - Call get_stock_screener ONCE FOR EACH of its six queries -- most_actives, day_gainers,
+    day_losers, growth_technology_stocks, undervalued_large_caps, aggressive_small_caps -- leaving
+    `count` at its default.
+  - Then check 3-5 candidates using get_options_chain(): your named universe ({CATHIE_ETF_UNIVERSE_TEXT}),
+    any liquid stock or ETF with price > $100 and open interest > 50, and whatever get_custom_watchlist(),
+    get_dark_pool_activity() and the screener calls returned. Don't default to the same 2-3 names
+    every cycle -- check your entity-memory tools for what you evaluated recently."""
+
+
+def new_trades_message(strategy, account, prior_pass_summary, scan_report=None):
     """Pass 2 of Cathie's cycle: research and open new credit spreads, run immediately after
     close_positions_message in a separate Runner.run with its own turn budget. `account`
     reflects live state, already updated by pass 1's closes; `prior_pass_summary` is pass 1's
@@ -432,28 +473,16 @@ Use the research tool to identify:
     waste a candidate slot on one you'll just have to abandon)
 
 MANDATORY TOOL CALLS THIS CYCLE (do not skip these, even if your research already looks sufficient):
-  - Call get_custom_watchlist() once -- these are tickers the person running this trading floor
-    specifically asked you to consider. An empty result is normal, not an error; when it does
-    return tickers, give them real consideration, not just a token glance before moving on.
   - Call get_dark_pool_activity() once -- TradeAlgo's dark-pool flagged tickers (today's
-    "intraday" list plus a "historical" list that includes earlier days -- check dates). Consider
-    its tickers as candidates and weigh a candidate's dark-pool direction when picking bull put
-    vs. bear call. If it's "stale" or empty, note that and carry on without it.
-  - Call get_stock_screener ONCE FOR EACH of its six queries -- most_actives, day_gainers,
-    day_losers, growth_technology_stocks, undervalued_large_caps, aggressive_small_caps -- before
-    finalizing your candidate list. All six, not just one: each covers a different slice of the
-    market (momentum, value, growth, small-cap). It returns 40 results per call by default --
-    leave `count` at the default across all six calls; a higher count on every call risks
-    overflowing your own context window. This is your check for names outside the named ETF
-    universe, not a fallback for when you're stuck.
+    "intraday" list plus a "historical" list that includes earlier days -- check dates). Weigh a
+    candidate's dark-pool direction when picking bull put vs. bear call. If it's "stale" or
+    empty, note that and carry on without it.
   - Call get_market_regime on each candidate you seriously consider, before you settle on a
     directional bias for it. Note whether it agrees or conflicts with your news research.
+  (Your watchlist tickers are already included in the scanner below; get_custom_watchlist() is
+  optional unless the scanner didn't run.)
 
-Then check 3-5 candidates using get_options_chain(). Your named universe includes {CATHIE_ETF_UNIVERSE_TEXT},
-plus any liquid stock or ETF with price > $100 and open interest > 50, plus whatever get_custom_watchlist(),
-get_dark_pool_activity() and all six get_stock_screener calls just returned. Don't default to the same 2-3 names every cycle -- check your
-entity-memory tools for what you evaluated or traded in recent cycles, and deliberately consider
-genuinely different candidates unless today's research specifically favors repeating one.
+{_scanner_section(scan_report)}
 
 IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setup where:
   - Expiration is 25-45 days out
