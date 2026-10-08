@@ -20,6 +20,15 @@ MIN_STOCK_PRICE = 100.0
 # keep moving hard for days, and its option prices are distorted meanwhile.
 RECENT_EARNINGS_TRADING_DAYS = 5
 
+# Wide-market rule: the natural credit (what you'd get selling at the bid and buying at
+# the ask) may be at most this fraction of the spread's WIDTH below the mid. Measured
+# against the width, not the credit: on a $1,000 stock each leg's bid-ask is wide in
+# dollars while a $10-wide spread's credit is ~$1, so a percent-of-credit rule rejected
+# spreads that were fine (MU 940/930 on 2026-10-08: mid 1.88, natural 1.25 = 34% of the
+# credit but 6.3% of the width). User chose 10% on 2026-10-08: $0.50 on a $5 spread,
+# $1.00 on a $10 spread. Replaced "natural no more than 25% below mid".
+MAX_GAP_PCT_OF_WIDTH = 0.10
+
 
 def price_floor_problem(symbol: str, price: float | None) -> str | None:
     """Why `symbol` at `price` breaks the $100 rule, or None if it's fine."""
@@ -30,6 +39,16 @@ def price_floor_problem(symbol: str, price: float | None) -> str | None:
         shown = f"${price:,.2f}" if isinstance(price, (int, float)) else "unknown"
         return (f"{symbol} trades at {shown}; individual stocks must be ${MIN_STOCK_PRICE:.0f}+ "
                 "(only the named ETF universe is exempt)")
+    return None
+
+
+def wide_market_problem(mid: float, natural: float, width: float) -> str | None:
+    """Why a spread's market is too wide to trust its mid, or None if it's fine."""
+    limit = MAX_GAP_PCT_OF_WIDTH * width
+    gap = mid - natural
+    if not gap <= limit + 1e-9:
+        return (f"market too wide: natural {natural:.2f} is ${gap:.2f} below mid {mid:.2f} "
+                f"({gap / width:.1%} of the ${width:g} width; limit {MAX_GAP_PCT_OF_WIDTH:.0%} = ${limit:.2f})")
     return None
 
 

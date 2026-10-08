@@ -19,7 +19,7 @@ Hard limits on real orders, all enforced here in code (not by prompt):
   - Only during the regular session (Mon-Fri 9:30-16:00 ET).
   - Live re-checks at approval: 25-45 DTE, short delta < 0.20, $50+ premium, $100+ stock
     price and no earnings report in the last 5 trading days (named ETFs exempt), quotes on
-    both legs, natural no more than 25% below mid, max loss within Funds Available and
+    both legs, natural no more than 10% of the spread's width below mid, max loss within Funds Available and
     the 8%-of-Day-Net-Liq / 5x-premium caps, and no underlying the user already holds
     options on (their own positions are never touched or merged with Cathie's).
   - A file named STOP_TRADING in this folder blocks all staging and sending.
@@ -46,7 +46,6 @@ MAX_CONTRACTS_PER_ORDER = 1
 MAX_ORDERS_PER_DAY = 2
 MAX_STAGED = 3
 UNFILLED_CANCEL_MINUTES = 30
-MAX_MID_TO_NATURAL_GAP = 0.25  # natural may be at most 25% worse than mid
 MIN_NET_PREMIUM = 50.0
 MAX_SHORT_DELTA = 0.20
 MIN_DTE, MAX_DTE = 25, 45
@@ -344,9 +343,9 @@ def check_for_approval(spread: LiveSpread) -> dict:
     if mid <= 0:
         problems.append("no credit at the mid")
         return plan
-    gap = (mid - natural) / mid
-    if gap > MAX_MID_TO_NATURAL_GAP:
-        problems.append(f"market too wide: natural is {gap:.0%} below mid (limit {MAX_MID_TO_NATURAL_GAP:.0%})")
+    wide = trade_rules.wide_market_problem(mid, natural, abs(spread.short_strike - spread.long_strike))
+    if wide:
+        problems.append(wide)
     delta = short.get("delta")
     if delta is None:
         problems.append("Schwab has no delta for the short leg")
