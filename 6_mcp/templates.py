@@ -420,7 +420,8 @@ def _scanner_section(scan_report) -> str:
                   "TradeAlgo dark-pool tickers, your ETF universe and all six Yahoo screens -- and found "
                   f"{scan_report.get('qualified')} spreads that pass every hard rule at current mid prices "
                   "(1 contract; 25-45 DTE, short |delta| <= 0.20, open interest >= 100 on both legs, $50+ "
-                  "premium, max loss <= 5x premium and <= 8% of net liq, no earnings in the window). "
+                  "premium, max loss <= 5x premium and <= 8% of net liq, $100+ stock price (named ETFs exempt), "
+                  "no earnings in the window and none reported in the last 5 trading days). "
                   "\"sources\" says where each ticker came from.")
         if not top:
             return header + """

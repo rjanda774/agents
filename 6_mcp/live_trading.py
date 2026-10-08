@@ -17,7 +17,8 @@ Hard limits on real orders, all enforced here in code (not by prompt):
   - 1 contract per order; at most 2 orders sent per trading day (ET); at most 3 trades
     waiting for approval at once.
   - Only during the regular session (Mon-Fri 9:30-16:00 ET).
-  - Live re-checks at approval: 25-45 DTE, short delta < 0.20, $50+ premium, quotes on
+  - Live re-checks at approval: 25-45 DTE, short delta < 0.20, $50+ premium, $100+ stock
+    price and no earnings report in the last 5 trading days (named ETFs exempt), quotes on
     both legs, natural no more than 25% below mid, max loss within Funds Available and
     the 8%-of-Day-Net-Liq / 5x-premium caps, and no underlying the user already holds
     options on (their own positions are never touched or merged with Cathie's).
@@ -317,6 +318,21 @@ def check_for_approval(spread: LiveSpread) -> dict:
     lines.append(f"underlying ${chain['current_price']:,.2f}, {dte} DTE")
     lines.append(f"short {short['symbol']}  bid {short['bid']:.2f} ask {short['ask']:.2f}  delta {short.get('delta')}")
     lines.append(f"long  {long_['symbol']}  bid {long_['bid']:.2f} ask {long_['ask']:.2f}  delta {long_.get('delta')}")
+
+    # trade_rules.py: $100+ for individual stocks, and no trade within 5 trading days after
+    # an earnings report (named ETFs exempt from both). Real money: unknown report date = no.
+    import trade_rules
+    from universe import CATHIE_ETF_UNIVERSE
+    floor = trade_rules.price_floor_problem(spread.symbol, chain["current_price"])
+    if floor:
+        problems.append(floor)
+    if spread.symbol not in CATHIE_ETF_UNIVERSE:
+        last = trade_rules.get_last_earnings_date(spread.symbol)
+        recent = trade_rules.recent_earnings_problem(spread.symbol, last)
+        if recent:
+            problems.append(recent)
+        elif last is None:
+            problems.append(f"can't verify when {spread.symbol} last reported earnings")
 
     quotes = [short["bid"], short["ask"], long_["bid"], long_["ask"]]
     if not all(math.isfinite(q) for q in quotes) or min(quotes) <= 0:

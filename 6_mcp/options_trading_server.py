@@ -1006,9 +1006,17 @@ async def sell_credit_spread(
         # whenever that data is flaky; the warning is included in the success response so a gap
         # here stays visible instead of silent.
         EARNINGS_BUFFER_DAYS_AFTER_EXPIRATION = 20
-        next_earnings = _get_next_earnings_date(symbol)
+        # ETFs have no earnings, so their date is always "unknown" -- which would make real
+        # trades (approve mode fails closed on unknown) impossible on Cathie's named ETFs.
+        # Those are exempt from both earnings checks.
+        import trade_rules
+        from universe import CATHIE_ETF_UNIVERSE
+        is_named_etf = symbol.upper() in CATHIE_ETF_UNIVERSE
+        next_earnings = None if is_named_etf else _get_next_earnings_date(symbol)
         earnings_warning = None
-        if next_earnings is not None:
+        if is_named_etf:
+            pass
+        elif next_earnings is not None:
             danger_end = exp_date + dt_mod.timedelta(days=EARNINGS_BUFFER_DAYS_AFTER_EXPIRATION)
             if today <= next_earnings <= danger_end:
                 return json.dumps({
@@ -1028,6 +1036,21 @@ async def sell_credit_spread(
                 "Double-check earnings timing yourself before relying on this position."
             )
 
+        # HARD ENFORCEMENT (trade_rules.py, added 2026-10-08): no new spread within 5 trading
+        # days after an earnings report. The forward check above can't see a report that
+        # already happened -- yfinance then shows the NEXT date -- which let PENG through on
+        # its own earnings day.
+        last_earnings = None
+        if not is_named_etf:
+            last_earnings = trade_rules.get_last_earnings_date(symbol)
+            recent = trade_rules.recent_earnings_problem(symbol, last_earnings)
+            if recent:
+                return json.dumps({"error": f"TRADE REJECTED: {recent}. Pick a different underlying."})
+            if last_earnings is None:
+                note = (f"Could not verify when {symbol} last reported earnings -- the 5-trading-day "
+                        "post-earnings check wasn't applied.")
+                earnings_warning = f"{earnings_warning} {note}" if earnings_warning else note
+
         # Load or create options account
         options_data = read_account(f"{name.lower()}_options")
         if not options_data:
@@ -1044,6 +1067,12 @@ async def sell_credit_spread(
         
         if "error" in analysis:
             return json.dumps(analysis)
+
+        # HARD ENFORCEMENT (trade_rules.py): individual stocks must trade at $100+; the
+        # named ETF universe is exempt. Was prompt-only guidance before 2026-10-08.
+        floor = trade_rules.price_floor_problem(symbol, analysis.get("current_price"))
+        if floor:
+            return json.dumps({"error": f"TRADE REJECTED: {floor}. Pick a different underlying."})
         
         # Extract premium from analysis
         # Fields match the output of analyze_credit_spread
@@ -1119,9 +1148,13 @@ async def sell_credit_spread(
                                             "(use 'simulated' or 'approve'). Nothing was traded."})
             if earnings_warning:
                 # Paper trades fail open on unknown earnings; real money fails closed.
-                return json.dumps({"error": f"TRADE REJECTED: {symbol}'s next earnings date can't be "
-                                            "verified right now, and real trades require it. Pick a "
-                                            "different underlying."})
+                missing = " and ".join(
+                    part for part, unknown in (("next earnings date", next_earnings is None),
+                                               ("last report date", last_earnings is None)) if unknown
+                )
+                return json.dumps({"error": f"TRADE REJECTED: {symbol}'s {missing} can't be verified "
+                                            "right now, and real trades require both. Pick a different "
+                                            "underlying."})
             staged = live_trading.stage(
                 symbol, spread_type, short_strike, long_strike, expiration_date, contracts,
                 net_premium / (100 * contracts), max_loss, rationale,
