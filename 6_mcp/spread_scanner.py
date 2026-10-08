@@ -33,8 +33,14 @@ too long for ~300 tickers), and Cathie is told to fall back to the old routine.
 """
 import concurrent.futures
 import datetime as dt
+import warnings
 
 import trade_rules
+
+# Importing options_trading_server (for the screener list and earnings lookup) loads the
+# MCP library, whose FastMCP settings model warns about an unresolved 'lifespan' field.
+# Harmless -- that setting is never used here -- so hide exactly that one warning.
+warnings.filterwarnings("ignore", message=r"Field 'lifespan' has an incomplete definition")
 import json
 import math
 import os
