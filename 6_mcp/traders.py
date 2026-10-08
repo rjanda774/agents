@@ -214,6 +214,20 @@ class Trader:
         except Exception as e:
             print(f"{self.name}: position-review pass failed: {e}")
 
+        # Approve mode with no room for another real order today (daily limit used, too
+        # many staged, or STOP_TRADING): skip the scan and the new-trade pass -- every
+        # trade she picked would be refused at staging anyway.
+        try:
+            blocked = live_trading.new_trades_blocked()
+        except Exception as e:
+            blocked = None
+            print(f"{self.name}: couldn't check real-order capacity: {e}")
+        if blocked:
+            line = f"Skipped the new-trade search: {blocked}."
+            print(f"{self.name}: {line}")
+            write_log(self.name, "live", line)
+            return
+
         # Code-driven spread scan (spread_scanner.py): checks every candidate source's
         # option chains against the hard rules so Cathie picks from spreads that actually
         # qualify, instead of hand-checking 3-5 of ~300 tickers (she was observed skipping

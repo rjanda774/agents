@@ -184,6 +184,25 @@ def orders_sent_today(ledger: LiveLedger) -> int:
                if (t := _parse_et(s.submitted_at)) is not None and t.date() == today)
 
 
+def new_trades_blocked() -> str | None:
+    """Why no new real trade can be staged right now (approve mode only), or None.
+    Checked before Cathie's new-trade pass so she doesn't spend a whole pass picking
+    trades stage() is certain to refuse -- seen live 2026-10-08: after 2 orders were sent,
+    she "staged" two more that the daily limit had rejected, and reported them as staged."""
+    if execution_mode() != "approve":
+        return None
+    if kill_switch_on():
+        return "real trading is stopped (STOP_TRADING file present)"
+    ledger = load_ledger()
+    sent = orders_sent_today(ledger)
+    if sent >= MAX_ORDERS_PER_DAY:
+        return f"the daily limit of {MAX_ORDERS_PER_DAY} real orders is used up ({sent} sent today)"
+    staged = sum(1 for s in ledger.spreads if s.status == "staged")
+    if staged >= MAX_STAGED:
+        return f"{staged} trades are already waiting for approval (limit {MAX_STAGED})"
+    return None
+
+
 def users_own_underlyings(positions: list[dict], ledger: LiveLedger) -> set[str]:
     """Underlyings the user holds options on themselves: Schwab option positions whose
     contract symbols aren't legs of Cathie's own live spreads."""
