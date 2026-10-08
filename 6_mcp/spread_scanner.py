@@ -18,7 +18,7 @@ What it does, each cycle before Cathie's new-trade pass (traders.py) or by hand
   2. One Schwab option-chain call per ticker for the 25-45 DTE window.
   3. Every bull put and bear call, $5 and $10 wide, that passes: short |delta| <= 0.20,
      bid and ask on both legs, open interest >= 100 on both legs, natural no more than
-     25% below mid, $50+ premium at the mid, max loss <= 5x premium and <= 8% of Day Net
+     10% of the spread's width below mid, $50+ premium at the mid, max loss <= 5x premium and <= 8% of Day Net
      Liq (when the account can be read). Best one per ticker and direction, ranked by
      premium / max loss.
   4. Drops individual stocks under $100, anything with earnings from today through 20
@@ -53,7 +53,6 @@ MIN_OPEN_INTEREST = 100
 MIN_NET_PREMIUM = 50.0
 MAX_RISK_TO_PREMIUM = 5.0
 MAX_RISK_PCT_OF_NET_LIQ = 0.08
-MAX_MID_TO_NATURAL_GAP = 0.25
 EARNINGS_BUFFER_DAYS = 20
 STRIKE_COUNT = 40          # strikes each side of the money requested per chain
 SCREENER_COUNT = 40
@@ -120,7 +119,7 @@ def _quoted(row: dict) -> bool:
 
 
 def best_spreads(chain: dict, net_liq: float | None, why=None,
-                 max_gap: float = MAX_MID_TO_NATURAL_GAP) -> list[dict]:
+                 check_gap: bool = True) -> list[dict]:
     """The best qualifying bull put and bear call in one ticker's chain (0-2 results).
     Pass a collections.Counter as `why` to count each rule's rejections (--explain)."""
     def no(reason):
@@ -165,8 +164,8 @@ def best_spreads(chain: dict, net_liq: float | None, why=None,
                     if mid <= 0:
                         no("no credit at the mid")
                         continue
-                    if (mid - natural) / mid > max_gap:
-                        no("market too wide (natural >25% below mid)")
+                    if check_gap and trade_rules.wide_market_problem(mid, natural, width):
+                        no("market too wide (natural >10% of width below mid)")
                         continue
                     credit = round(mid, 2)
                     premium = round(credit * 100, 2)
@@ -373,12 +372,13 @@ def explain(symbols: list[str]) -> None:
         # spread if that rule were off, with its numbers, so the threshold can be judged from
         # real quotes.
         passed = {s["spread_type"] for s in spreads}
-        for s in best_spreads(chain, net_liq, max_gap=float("inf")):
+        for s in best_spreads(chain, net_liq, check_gap=False):
             if s["spread_type"] not in passed:
-                gap = (s["credit"] - s["natural"]) / s["credit"] if s["credit"] else 0
+                gap = s["credit"] - s["natural"]
+                width = abs(s["short_strike"] - s["long_strike"])
                 print(f"  nearest miss {s['spread_type']}: {s['short_strike']:g}/{s['long_strike']:g} "
                       f"{s['expiration']} mid {s['credit']:.2f}, natural {s['natural']:.2f} "
-                      f"(natural {gap:.0%} below mid; limit {MAX_MID_TO_NATURAL_GAP:.0%}), "
+                      f"(${gap:.2f} below mid = {gap / width:.1%} of width; limit {trade_rules.MAX_GAP_PCT_OF_WIDTH:.0%}), "
                       f"max loss ${s['max_loss']:.0f}, delta {s['short_delta']}, OI {s['open_interest'][0]}/{s['open_interest'][1]}")
 
 
