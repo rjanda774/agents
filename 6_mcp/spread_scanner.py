@@ -21,9 +21,10 @@ What it does, each cycle before Cathie's new-trade pass (traders.py) or by hand
      25% below mid, $50+ premium at the mid, max loss <= 5x premium and <= 8% of Day Net
      Liq (when the account can be read). Best one per ticker and direction, ranked by
      premium / max loss.
-  4. Drops anything with earnings from today through 20 days past expiration, and in
-     approve mode also unknown earnings and underlyings the user holds options on
-     themselves (both would be rejected at staging anyway).
+  4. Drops individual stocks under $100, anything with earnings from today through 20
+     days past expiration or reported in the last 5 trading days (trade_rules.py; the
+     named ETFs are exempt from all three), and in approve mode also unknown earnings and
+     underlyings the user holds options on themselves (staging would reject those anyway).
 Prices are mids for 1 contract. Everything is re-checked when Cathie stages it and
 again at approval -- this list only says where to look.
 
@@ -32,6 +33,8 @@ too long for ~300 tickers), and Cathie is told to fall back to the old routine.
 """
 import concurrent.futures
 import datetime as dt
+
+import trade_rules
 import json
 import math
 import os
@@ -96,7 +99,8 @@ def _candidates() -> tuple[dict[str, list[str]], list[str]]:
                 result = yf.screen(query, count=SCREENER_COUNT)
                 for q in (result or {}).get("quotes", []):
                     price = q.get("regularMarketPrice")
-                    if price is not None and price >= MIN_SCREENER_PRICE:
+                    # Screens return individual stocks, so the $100 stock floor applies.
+                    if price is not None and price >= max(MIN_SCREENER_PRICE, trade_rules.MIN_STOCK_PRICE):
                         add(q.get("symbol"), query)
             except Exception as e:
                 notes.append(f"screener {query} failed: {e}")
@@ -215,7 +219,7 @@ def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
 
     today = dt.date.today()
     window = (today + dt.timedelta(days=MIN_DTE), today + dt.timedelta(days=MAX_DTE))
-    found, failed, scanned = [], 0, 0
+    found, failed, scanned, under_price = [], 0, 0, 0
     symbols = list(candidates)
 
     def one(symbol):
@@ -223,6 +227,8 @@ def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
             return symbol, None, "time"
         try:
             chain = schwab_client.get_option_chain(symbol, *window, strike_count=STRIKE_COUNT)
+            if trade_rules.price_floor_problem(symbol, chain.get("current_price")):
+                return symbol, None, "price"
             return symbol, best_spreads(chain, net_liq), None
         except Exception as e:
             return symbol, None, str(e)
@@ -232,6 +238,9 @@ def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
             if err == "time":
                 continue
             scanned += 1
+            if err == "price":
+                under_price += 1
+                continue
             if err is not None:
                 failed += 1
                 continue
@@ -242,19 +251,29 @@ def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
         report["notes"].append(f"time budget reached: scanned {scanned} of {len(symbols)} tickers "
                                "(watchlist, dark-pool and ETF tickers go first)")
 
-    # Earnings: only for tickers that produced a spread.
+    # Earnings, only for tickers that produced a spread: upcoming (through 20 days past
+    # expiration) and recent (reported in the last 5 trading days, trade_rules.py). The
+    # named ETFs have no earnings and are exempt; in approve mode an unknown date drops it.
     from options_trading_server import _get_next_earnings_date
-    tickers = sorted({s["symbol"] for s in found})
+    from universe import CATHIE_ETF_UNIVERSE
+    tickers = sorted({s["symbol"] for s in found} - set(CATHIE_ETF_UNIVERSE))
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         earnings = dict(zip(tickers, pool.map(_get_next_earnings_date, tickers)))
-    kept, dropped_earnings = [], 0
+        last_earnings = dict(zip(tickers, pool.map(trade_rules.get_last_earnings_date, tickers)))
+    kept, dropped_earnings, dropped_recent = [], 0, 0
     for s in found:
-        e = earnings.get(s["symbol"])
+        if s["symbol"] in CATHIE_ETF_UNIVERSE:
+            kept.append(s)
+            continue
+        e, last = earnings.get(s["symbol"]), last_earnings.get(s["symbol"])
         exp = dt.date.fromisoformat(s["expiration"])
         if e is not None and today <= e <= exp + dt.timedelta(days=EARNINGS_BUFFER_DAYS):
             dropped_earnings += 1
             continue
-        if e is None:
+        if trade_rules.recent_earnings_problem(s["symbol"], last, today):
+            dropped_recent += 1
+            continue
+        if e is None or last is None:
             if mode == "approve":
                 dropped_earnings += 1
                 continue
@@ -265,6 +284,7 @@ def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
     report.update(
         candidates=len(symbols), scanned=scanned, chain_errors=failed,
         qualified=len(kept), dropped_for_earnings=dropped_earnings,
+        dropped_recent_earnings=dropped_recent, under_price_floor=under_price,
         skipped_own_underlyings=sorted(own_underlyings),
         top=kept[:top_n], seconds=round(time.monotonic() - started),
     )
@@ -313,19 +333,32 @@ def explain(symbols: list[str]) -> None:
             continue
         exps = sorted(e for e in chain.get("expirations", {}) if MIN_DTE <= (dt.date.fromisoformat(e) - today).days <= MAX_DTE)
         print(f"  underlying ${chain.get('current_price', 0):,.2f}; expirations in window: {', '.join(exps) or 'none'}")
+        floor = trade_rules.price_floor_problem(symbol, chain.get("current_price"))
+        if floor:
+            print(f"  SKIPPED: {floor}")
         why = collections.Counter()
         spreads = best_spreads(chain, net_liq, why)
         for reason, n in why.most_common():
             print(f"  {n:>5}  {reason}")
-        e = _get_next_earnings_date(symbol)
-        print(f"  next earnings: {e or 'unknown'}")
+        from universe import CATHIE_ETF_UNIVERSE
+        is_etf = symbol in CATHIE_ETF_UNIVERSE
+        e = None if is_etf else _get_next_earnings_date(symbol)
+        last = None if is_etf else trade_rules.get_last_earnings_date(symbol)
+        if is_etf:
+            print("  earnings: none (named ETF, exempt)")
+        else:
+            print(f"  next earnings: {e or 'unknown'}; last reported: {last or 'unknown'}")
+            recent = trade_rules.recent_earnings_problem(symbol, last, today)
+            if recent:
+                print(f"  -> DROPPED: {recent}")
         for s in spreads:
             exp = dt.date.fromisoformat(s["expiration"])
-            blocked = e is not None and today <= e <= exp + dt.timedelta(days=EARNINGS_BUFFER_DAYS)
+            blocked = not is_etf and e is not None and today <= e <= exp + dt.timedelta(days=EARNINGS_BUFFER_DAYS)
             print(f"  best {s['spread_type']}: {s['short_strike']:g}/{s['long_strike']:g} {s['expiration']} "
                   f"credit {s['credit']:.2f}, max loss ${s['max_loss']:.0f}"
                   + ("  -> DROPPED: earnings within expiration + 20 days" if blocked else "")
-                  + ("  -> DROPPED in approve mode: earnings date unknown" if e is None and mode == "approve" else ""))
+                  + ("  -> DROPPED in approve mode: earnings date unknown"
+                     if not is_etf and (e is None or last is None) and mode == "approve" else ""))
         if not spreads:
             print("  no spread passed every rule")
 
@@ -347,7 +380,10 @@ def main():
         print(f"  note: {note}")
     if report.get("skipped_own_underlyings"):
         print(f"  skipped (you hold options on them): {', '.join(report['skipped_own_underlyings'])}")
-    print(f"  chain errors: {report.get('chain_errors', 0)}, dropped for earnings: {report.get('dropped_for_earnings', 0)}")
+    print(f"  chain errors: {report.get('chain_errors', 0)}, under ${trade_rules.MIN_STOCK_PRICE:.0f}: "
+          f"{report.get('under_price_floor', 0)}, dropped for upcoming/unknown earnings: "
+          f"{report.get('dropped_for_earnings', 0)}, reported in the last "
+          f"{trade_rules.RECENT_EARNINGS_TRADING_DAYS} trading days: {report.get('dropped_recent_earnings', 0)}")
     print()
     for i, s in enumerate(report.get("top", []), 1):
         print(f"{i:>2}. {s['symbol']:<6} {s['spread_type']:<9} {s['short_strike']:g}/{s['long_strike']:g}  "
