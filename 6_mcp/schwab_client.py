@@ -154,7 +154,8 @@ def get_quote(symbol: str) -> float:
     return float(price)
 
 
-def get_option_chain(symbol: str, from_date: dt.date, to_date: dt.date) -> dict:
+def get_option_chain(symbol: str, from_date: dt.date, to_date: dt.date,
+                     strike_count: int | None = None) -> dict:
     """Real option chain from Schwab's Market Data API for expirations in
     [from_date, to_date] (inclusive), with real bid/ask/open interest/IV and
     real broker-computed Greeks per contract -- Schwab's chain endpoint returns
@@ -173,6 +174,8 @@ def get_option_chain(symbol: str, from_date: dt.date, to_date: dt.date) -> dict:
                 }, ...
             }
         }
+    strike_count limits the chain to that many strikes above and below the money
+    (spread_scanner.py uses it to keep a 300-ticker scan's responses small); None = all.
     Raises on any failure (auth, network, no data) -- callers decide how to fall back.
     """
     client = _get_client()
@@ -184,6 +187,7 @@ def get_option_chain(symbol: str, from_date: dt.date, to_date: dt.date) -> dict:
             from_date=from_date,
             to_date=to_date,
             include_underlying_quote=True,
+            strike_count=strike_count,
         )
         resp.raise_for_status()
         return resp.json()

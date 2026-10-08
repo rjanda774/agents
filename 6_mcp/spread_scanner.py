@@ -1,0 +1,275 @@
+#!/usr/bin/env python
+"""
+Code-driven credit-spread scanner: finds spreads that actually pass Cathie's hard
+rules across every candidate source, so she picks from real trades instead of
+hand-checking 3-5 of ~300 tickers.
+
+Why: given ~240 screener tickers plus the watchlist and dark-pool lists, Cathie
+(gpt-4o-mini) only ever ran get_options_chain on a few -- in practice the watchlist
+and dark-pool names, whose prompt wording was strongest -- and missed viable
+screener names (AMD and MU on 2026-10, per the user's own thinkorswim check).
+Screening hundreds of chains is mechanical work, so code does it now.
+
+What it does, each cycle before Cathie's new-trade pass (traders.py) or by hand
+(`uv run spread_scanner.py`):
+  1. Candidates: the user's watchlist, TradeAlgo dark-pool tickers, the named ETF
+     universe, and all six Yahoo screens (40 each, $50+), de-duplicated, in that
+     priority order (the scan stops at a time budget, so the first ones matter most).
+  2. One Schwab option-chain call per ticker for the 25-45 DTE window.
+  3. Every bull put and bear call, $5 and $10 wide, that passes: short |delta| <= 0.20,
+     bid and ask on both legs, open interest >= 100 on both legs, natural no more than
+     25% below mid, $50+ premium at the mid, max loss <= 5x premium and <= 8% of Day Net
+     Liq (when the account can be read). Best one per ticker and direction, ranked by
+     premium / max loss.
+  4. Drops anything with earnings from today through 20 days past expiration, and in
+     approve mode also unknown earnings and underlyings the user holds options on
+     themselves (both would be rejected at staging anyway).
+Prices are mids for 1 contract. Everything is re-checked when Cathie stages it and
+again at approval -- this list only says where to look.
+
+Schwab only: without Schwab market data the scan is skipped (yfinance would take far
+too long for ~300 tickers), and Cathie is told to fall back to the old routine.
+"""
+import concurrent.futures
+import datetime as dt
+import json
+import math
+import os
+import time
+
+MIN_DTE, MAX_DTE = 25, 45
+MAX_SHORT_DELTA = 0.20
+WIDTHS = (5.0, 10.0)
+MIN_OPEN_INTEREST = 100
+MIN_NET_PREMIUM = 50.0
+MAX_RISK_TO_PREMIUM = 5.0
+MAX_RISK_PCT_OF_NET_LIQ = 0.08
+MAX_MID_TO_NATURAL_GAP = 0.25
+EARNINGS_BUFFER_DAYS = 20
+STRIKE_COUNT = 40          # strikes each side of the money requested per chain
+SCREENER_COUNT = 40
+TIME_BUDGET_SECONDS = 360  # stop scanning new tickers after this; report it as partial
+TOP_N = 10
+WORKERS = 4
+
+
+def _candidates() -> tuple[dict[str, list[str]], list[str]]:
+    """{ticker: [sources]} in priority order, plus notes about sources that failed."""
+    from universe import CATHIE_ETF_UNIVERSE, load_custom_watchlist
+
+    found: dict[str, list[str]] = {}
+    notes = []
+
+    def add(symbol, source):
+        symbol = str(symbol or "").strip().upper()
+        if symbol and symbol.replace(".", "").replace("-", "").isalnum():
+            found.setdefault(symbol, [])
+            if source not in found[symbol]:
+                found[symbol].append(source)
+
+    try:
+        for t in load_custom_watchlist():
+            add(t, "watchlist")
+    except Exception as e:
+        notes.append(f"watchlist unreadable: {e}")
+
+    darkpool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tradealgo_darkpool.json")
+    try:
+        if os.path.exists(darkpool):
+            with open(darkpool, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+            for t in (cache.get("intraday") or {}).get("tickers") or []:
+                add(t.get("ticker"), f"darkpool:{t.get('direction') or '?'}")
+            for t in (cache.get("historical") or {}).get("tickers") or []:
+                add(t.get("ticker"), "darkpool:historical")
+    except Exception as e:
+        notes.append(f"dark-pool file unreadable: {e}")
+
+    for t in CATHIE_ETF_UNIVERSE:
+        add(t, "etf_universe")
+
+    try:
+        import yfinance as yf
+        from options_trading_server import MIN_SCREENER_PRICE, SCREENER_QUERIES
+        for query in SCREENER_QUERIES:
+            try:
+                result = yf.screen(query, count=SCREENER_COUNT)
+                for q in (result or {}).get("quotes", []):
+                    price = q.get("regularMarketPrice")
+                    if price is not None and price >= MIN_SCREENER_PRICE:
+                        add(q.get("symbol"), query)
+            except Exception as e:
+                notes.append(f"screener {query} failed: {e}")
+    except Exception as e:
+        notes.append(f"screeners unavailable: {e}")
+    return found, notes
+
+
+def _quoted(row: dict) -> bool:
+    return all(isinstance(row.get(k), (int, float)) and math.isfinite(row[k]) and row[k] > 0 for k in ("bid", "ask"))
+
+
+def best_spreads(chain: dict, net_liq: float | None) -> list[dict]:
+    """The best qualifying bull put and bear call in one ticker's chain (0-2 results)."""
+    today = dt.date.today()
+    best: dict[str, dict] = {}
+    for exp, data in (chain.get("expirations") or {}).items():
+        try:
+            dte = (dt.date.fromisoformat(exp) - today).days
+        except ValueError:
+            continue
+        if not MIN_DTE <= dte <= MAX_DTE:
+            continue
+        for spread_type, rows, sign in (("bull_put", data.get("puts") or [], -1), ("bear_call", data.get("calls") or [], 1)):
+            by_strike = {r["strike"]: r for r in rows}
+            for short in rows:
+                delta = short.get("delta")
+                if delta is None or abs(delta) > MAX_SHORT_DELTA or not _quoted(short):
+                    continue
+                if (short.get("openInterest") or 0) < MIN_OPEN_INTEREST:
+                    continue
+                for width in WIDTHS:
+                    long_ = by_strike.get(round(short["strike"] + sign * width, 4))
+                    if long_ is None or not _quoted(long_) or (long_.get("openInterest") or 0) < MIN_OPEN_INTEREST:
+                        continue
+                    mid = (short["bid"] + short["ask"]) / 2 - (long_["bid"] + long_["ask"]) / 2
+                    natural = short["bid"] - long_["ask"]
+                    if mid <= 0 or (mid - natural) / mid > MAX_MID_TO_NATURAL_GAP:
+                        continue
+                    credit = round(mid, 2)
+                    premium = round(credit * 100, 2)
+                    max_loss = round((width - credit) * 100, 2)
+                    if premium < MIN_NET_PREMIUM or max_loss <= 0 or max_loss > premium * MAX_RISK_TO_PREMIUM:
+                        continue
+                    if net_liq is not None and max_loss > net_liq * MAX_RISK_PCT_OF_NET_LIQ:
+                        continue
+                    cand = {
+                        "symbol": chain.get("symbol"), "spread_type": spread_type,
+                        "short_strike": short["strike"], "long_strike": long_["strike"],
+                        "expiration": exp, "dte": dte, "credit": credit, "premium": premium,
+                        "max_loss": max_loss, "reward_to_risk": round(premium / max_loss, 3),
+                        "short_delta": round(delta, 3),
+                        "open_interest": [short.get("openInterest"), long_.get("openInterest")],
+                        "underlying": round(float(chain.get("current_price") or 0), 2),
+                    }
+                    if cand["reward_to_risk"] > best.get(spread_type, {}).get("reward_to_risk", -1):
+                        best[spread_type] = cand
+    return list(best.values())
+
+
+def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
+    """Run the full scan. Never raises: problems come back in the report's notes."""
+    import schwab_client
+
+    started = time.monotonic()
+    report = {"scanned_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "notes": []}
+    if not schwab_client.is_configured():
+        report["skipped"] = "Schwab market data isn't configured; the scanner needs it."
+        return report
+
+    candidates, notes = _candidates()
+    report["notes"].extend(notes)
+
+    mode = "simulated"
+    net_liq, own_underlyings = None, set()
+    try:
+        import live_trading
+        import schwab_trading
+        mode = live_trading.execution_mode()
+        account = schwab_trading.get_account(include_positions=True)
+        net_liq = schwab_trading.risk_balances(account)["net_liq"]
+        if mode == "approve":
+            own_underlyings = live_trading.users_own_underlyings(
+                schwab_trading.option_positions(account), live_trading.load_ledger())
+    except Exception as e:
+        report["notes"].append(f"couldn't read the Schwab account ({e}); 8%-of-net-liq cap not applied")
+    for sym in own_underlyings:
+        candidates.pop(sym, None)
+
+    today = dt.date.today()
+    window = (today + dt.timedelta(days=MIN_DTE), today + dt.timedelta(days=MAX_DTE))
+    found, failed, scanned = [], 0, 0
+    symbols = list(candidates)
+
+    def one(symbol):
+        if time.monotonic() - started > time_budget:
+            return symbol, None, "time"
+        try:
+            chain = schwab_client.get_option_chain(symbol, *window, strike_count=STRIKE_COUNT)
+            return symbol, best_spreads(chain, net_liq), None
+        except Exception as e:
+            return symbol, None, str(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for symbol, spreads, err in pool.map(one, symbols):
+            if err == "time":
+                continue
+            scanned += 1
+            if err is not None:
+                failed += 1
+                continue
+            for s in spreads:
+                s["sources"] = candidates[symbol]
+                found.append(s)
+    if scanned < len(symbols):
+        report["notes"].append(f"time budget reached: scanned {scanned} of {len(symbols)} tickers "
+                               "(watchlist, dark-pool and ETF tickers go first)")
+
+    # Earnings: only for tickers that produced a spread.
+    from options_trading_server import _get_next_earnings_date
+    tickers = sorted({s["symbol"] for s in found})
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        earnings = dict(zip(tickers, pool.map(_get_next_earnings_date, tickers)))
+    kept, dropped_earnings = [], 0
+    for s in found:
+        e = earnings.get(s["symbol"])
+        exp = dt.date.fromisoformat(s["expiration"])
+        if e is not None and today <= e <= exp + dt.timedelta(days=EARNINGS_BUFFER_DAYS):
+            dropped_earnings += 1
+            continue
+        if e is None:
+            if mode == "approve":
+                dropped_earnings += 1
+                continue
+            s["earnings"] = "unknown"
+        kept.append(s)
+
+    kept.sort(key=lambda s: s["reward_to_risk"], reverse=True)
+    report.update(
+        candidates=len(symbols), scanned=scanned, chain_errors=failed,
+        qualified=len(kept), dropped_for_earnings=dropped_earnings,
+        skipped_own_underlyings=sorted(own_underlyings),
+        top=kept[:top_n], seconds=round(time.monotonic() - started),
+    )
+    return report
+
+
+def summary_line(report: dict) -> str:
+    if report.get("skipped"):
+        return f"Spread scanner skipped: {report['skipped']}"
+    top = ", ".join(f"{s['symbol']} {s['spread_type']} {s['short_strike']:g}/{s['long_strike']:g} "
+                    f"{s['expiration']} @{s['credit']:.2f}" for s in report.get("top", [])[:5])
+    return (f"Spread scanner: {report.get('scanned')} of {report.get('candidates')} tickers scanned in "
+            f"{report.get('seconds')}s, {report.get('qualified')} qualifying spreads"
+            + (f"; top: {top}" if top else ""))
+
+
+def main():
+    report = scan()
+    print(summary_line(report))
+    for note in report.get("notes", []):
+        print(f"  note: {note}")
+    if report.get("skipped_own_underlyings"):
+        print(f"  skipped (you hold options on them): {', '.join(report['skipped_own_underlyings'])}")
+    print(f"  chain errors: {report.get('chain_errors', 0)}, dropped for earnings: {report.get('dropped_for_earnings', 0)}")
+    print()
+    for i, s in enumerate(report.get("top", []), 1):
+        print(f"{i:>2}. {s['symbol']:<6} {s['spread_type']:<9} {s['short_strike']:g}/{s['long_strike']:g}  "
+              f"exp {s['expiration']} ({s['dte']}d)  credit {s['credit']:.2f} = ${s['premium']:.0f}  "
+              f"max loss ${s['max_loss']:.0f}  ratio {s['reward_to_risk']:.2f}  delta {s['short_delta']}  "
+              f"OI {s['open_interest'][0]}/{s['open_interest'][1]}  [{', '.join(s['sources'])}]"
+              + ("  earnings: unknown" if s.get("earnings") == "unknown" else ""))
+
+
+if __name__ == "__main__":
+    main()
