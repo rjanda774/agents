@@ -119,7 +119,8 @@ def _quoted(row: dict) -> bool:
     return all(isinstance(row.get(k), (int, float)) and math.isfinite(row[k]) and row[k] > 0 for k in ("bid", "ask"))
 
 
-def best_spreads(chain: dict, net_liq: float | None, why=None) -> list[dict]:
+def best_spreads(chain: dict, net_liq: float | None, why=None,
+                 max_gap: float = MAX_MID_TO_NATURAL_GAP) -> list[dict]:
     """The best qualifying bull put and bear call in one ticker's chain (0-2 results).
     Pass a collections.Counter as `why` to count each rule's rejections (--explain)."""
     def no(reason):
@@ -164,7 +165,7 @@ def best_spreads(chain: dict, net_liq: float | None, why=None) -> list[dict]:
                     if mid <= 0:
                         no("no credit at the mid")
                         continue
-                    if (mid - natural) / mid > MAX_MID_TO_NATURAL_GAP:
+                    if (mid - natural) / mid > max_gap:
                         no("market too wide (natural >25% below mid)")
                         continue
                     credit = round(mid, 2)
@@ -183,7 +184,8 @@ def best_spreads(chain: dict, net_liq: float | None, why=None) -> list[dict]:
                     cand = {
                         "symbol": chain.get("symbol"), "spread_type": spread_type,
                         "short_strike": short["strike"], "long_strike": long_["strike"],
-                        "expiration": exp, "dte": dte, "credit": credit, "premium": premium,
+                        "expiration": exp, "dte": dte, "credit": credit, "natural": round(natural, 2),
+                        "premium": premium,
                         "max_loss": max_loss, "reward_to_risk": round(premium / max_loss, 3),
                         "short_delta": round(delta, 3),
                         "open_interest": [short.get("openInterest"), long_.get("openInterest")],
@@ -367,6 +369,17 @@ def explain(symbols: list[str]) -> None:
                      if not is_etf and (e is None or last is None) and mode == "approve" else ""))
         if not spreads:
             print("  no spread passed every rule")
+        # Nearest miss on the wide-market rule, per direction with no passing spread: the best
+        # spread if that rule were off, with its numbers, so the threshold can be judged from
+        # real quotes.
+        passed = {s["spread_type"] for s in spreads}
+        for s in best_spreads(chain, net_liq, max_gap=float("inf")):
+            if s["spread_type"] not in passed:
+                gap = (s["credit"] - s["natural"]) / s["credit"] if s["credit"] else 0
+                print(f"  nearest miss {s['spread_type']}: {s['short_strike']:g}/{s['long_strike']:g} "
+                      f"{s['expiration']} mid {s['credit']:.2f}, natural {s['natural']:.2f} "
+                      f"(natural {gap:.0%} below mid; limit {MAX_MID_TO_NATURAL_GAP:.0%}), "
+                      f"max loss ${s['max_loss']:.0f}, delta {s['short_delta']}, OI {s['open_interest'][0]}/{s['open_interest'][1]}")
 
 
 def main():
