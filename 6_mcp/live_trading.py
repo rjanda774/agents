@@ -211,6 +211,26 @@ def users_own_underlyings(positions: list[dict], ledger: LiveLedger) -> set[str]
     return {p["underlying"] for p in positions if p.get("symbol") not in cathies and p.get("underlying")}
 
 
+def real_account_snapshot() -> dict:
+    """Live Schwab balances plus Cathie's active real trades, for her account summary in
+    approve mode. Added 2026-10-09: her end-of-cycle push reported the PAPER account's cash
+    ($13,461.50) as her balance, since that was the only balance she was shown."""
+    ledger = load_ledger()
+    snap = {
+        "real_trades": [f"{s.status}: {s.label()}" for s in ledger.spreads if s.status in ACTIVE_STATUSES],
+        "orders_sent_today": orders_sent_today(ledger),
+        "daily_limit": MAX_ORDERS_PER_DAY,
+    }
+    try:
+        import schwab_trading
+        balances = schwab_trading.risk_balances(schwab_trading.get_account())
+        snap["funds_available_for_trading"] = round(balances["funds_available"], 2)
+        snap["day_net_liquidating_value"] = round(balances["net_liq"], 2)
+    except Exception as e:
+        snap["balances_error"] = f"couldn't read Schwab balances right now: {e}"
+    return snap
+
+
 def overlapping_spread(ledger: LiveLedger, symbol: str, spread_type: str, expiration_date: str,
                        short_strike: float, long_strike: float, exclude_id: str | None = None):
     """Cathie's own staged/pending/open spread sharing a contract (same underlying,

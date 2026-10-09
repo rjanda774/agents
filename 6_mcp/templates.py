@@ -14,7 +14,11 @@ never as opened, sold or filled. Real orders are 1 contract each (use contracts=
 {live_trading.MAX_ORDERS_PER_DAY} per day and {live_trading.MAX_STAGED} waiting at once, and never on an underlying the
 user already holds options on. Real positions appear under "real_schwab_trades" in
 get_options_positions; you can't close them (the user does, in thinkorswim) -- if one meets an
-exit rule, say so in your summary. Your existing paper positions are still managed as before."""
+exit rule, say so in your summary. Your existing paper positions are still managed as before.
+MONEY FIGURES: the real account's balances are under "real_schwab_account" in your positions
+summary (funds_available_for_trading, day_net_liquidating_value). In every summary and push
+notification, report THOSE as the account's money. "paper_cash_simulated" is the old paper
+account's play money: never call it cash, balance or funds, and leave it out of notifications."""
     return """YOUR TRADES ARE STILL
 SIMULATED: sell_credit_spread/close_credit_spread only ever update your local paper
 account (cash/positions tracked here, not at Schwab) -- no real order is ever sent to
