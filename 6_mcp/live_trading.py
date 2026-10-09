@@ -211,6 +211,21 @@ def users_own_underlyings(positions: list[dict], ledger: LiveLedger) -> set[str]
     return {p["underlying"] for p in positions if p.get("symbol") not in cathies and p.get("underlying")}
 
 
+def overlapping_spread(ledger: LiveLedger, symbol: str, spread_type: str, expiration_date: str,
+                       short_strike: float, long_strike: float, exclude_id: str | None = None):
+    """Cathie's own staged/pending/open spread sharing a contract (same underlying,
+    expiration, put/call and strike) with this one, or None. Two such spreads would merge
+    at Schwab: on 2026-10-09 she staged MU 910/900 while holding MU 900/890, whose short
+    900 put the new spread's long 900 put would cancel out."""
+    for s in ledger.spreads:
+        if s.id == exclude_id or s.status not in ACTIVE_STATUSES:
+            continue
+        if (s.symbol, s.spread_type, s.expiration_date) == (symbol, spread_type, expiration_date) and \
+                {s.short_strike, s.long_strike} & {short_strike, long_strike}:
+            return s
+    return None
+
+
 # ---------------------------------------------------------------- staging (Cathie)
 
 def stage(symbol: str, spread_type: str, short_strike: float, long_strike: float,
@@ -255,6 +270,11 @@ def stage(symbol: str, spread_type: str, short_strike: float, long_strike: float
             if (s.symbol, s.spread_type, s.short_strike, s.long_strike, s.expiration_date) == \
                     (symbol, spread_type, short_strike, long_strike, expiration_date):
                 return {"error": f"Already {s.status}: {s.label()} (id {s.id}). Not staged again."}
+        clash = overlapping_spread(ledger, symbol, spread_type, expiration_date, short_strike, long_strike)
+        if clash:
+            return {"error": f"TRADE REJECTED: it shares a strike with Cathie's own {clash.status} spread "
+                             f"{clash.label()}, and the two would merge into one position at Schwab. "
+                             "Pick strikes that don't touch it, or a different underlying."}
         if sum(1 for s in active if s.status == "staged") >= MAX_STAGED:
             return {"error": f"TRADE REJECTED: {MAX_STAGED} trades are already waiting for the user's "
                              "approval. Don't propose more until those are handled."}
@@ -385,6 +405,11 @@ def check_for_approval(spread: LiveSpread) -> dict:
     problems.extend(schwab_trading.check_spread_risk(max_loss, net_premium, balances))
     if spread.symbol in users_own_underlyings(schwab_trading.option_positions(account), ledger):
         problems.append(f"you already hold your own {spread.symbol} options; real trades skip those underlyings")
+    clash = overlapping_spread(ledger, spread.symbol, spread.spread_type, spread.expiration_date,
+                               spread.short_strike, spread.long_strike, exclude_id=spread.id)
+    if clash and clash.status != "staged":
+        problems.append(f"shares a strike with Cathie's {clash.status} spread {clash.label()}; "
+                        "they'd merge into one position at Schwab")
 
     order = schwab_trading.build_open_order(
         spread.spread_type, short["symbol"], long_["symbol"], spread.contracts, credit).build()
