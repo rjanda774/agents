@@ -5,7 +5,8 @@ Review and approve Cathie's staged REAL trades (CATHIE_EXECUTION_MODE=approve).
     uv run approve_orders.py           review each staged trade, approve or reject it
     uv run approve_orders.py --list    just show the real-trade ledger, change nothing
     uv run approve_orders.py --exits   dry run: which open real positions meet an exit rule
-                                       now, and at what price they'd be closed (sends nothing)
+                                       now, and at what price they'd be closed (sends nothing);
+                                       with AUTO_CLOSE_MANUAL_AT_PROFIT=true, your own spreads too
 
 First it brings the ledger up to date with Schwab (fills, cancellations, orders
 left working 30+ minutes get cancelled). Then, for each trade Cathie staged, it

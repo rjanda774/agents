@@ -64,6 +64,13 @@ TOKEN_LIFETIME_DAYS = 7.0
 TOKEN_HALT_OPENS_DAYS = 6.5
 TOKEN_WARN_DAYS = 6.0
 
+
+def auto_close_manual() -> bool:
+    """AUTO_CLOSE_MANUAL_AT_PROFIT in .env (re-read each call): also close the user's own
+    vertical credit spreads at 75%+ profit. Off unless set to true/yes/1/on."""
+    load_dotenv(override=True)
+    return (os.getenv("AUTO_CLOSE_MANUAL_AT_PROFIT") or "").strip().lower() in ("1", "true", "yes", "on")
+
 ACTIVE_STATUSES = {"staged", "pending", "open", "closing"}
 
 
@@ -152,8 +159,27 @@ class LiveSpread(BaseModel):
                 f"exp {self.expiration_date} x{self.contracts}")
 
 
+class ManualClose(BaseModel):
+    """A closing order Cathie's code sent for one of the USER's own spreads
+    (AUTO_CLOSE_MANUAL_AT_PROFIT). Only these orders are ever cancelled by code; the
+    user's own orders never are."""
+    order_id: int | None = None
+    label: str
+    short_symbol: str
+    long_symbol: str
+    quantity: int
+    credit: float          # per spread, from Schwab's average prices
+    limit_debit: float
+    sent_at: str
+    status: Literal["working", "filled", "not_filled"] = "working"
+    fill_debit: float | None = None
+    realized_pnl: float | None = None
+    done_at: str | None = None
+
+
 class LiveLedger(BaseModel):
     spreads: list[LiveSpread] = []
+    manual_closes: list[ManualClose] = []
     token_warned_on: str | None = None  # ET date of the last "Schwab login expiring" push
 
     def get(self, spread_id: str) -> LiveSpread | None:
@@ -636,6 +662,11 @@ def reconcile() -> list[str]:
         if msg:
             messages.append(msg)
 
+    try:
+        messages += _reconcile_manual_closes(now)
+    except Exception as e:
+        messages.append(f"couldn't check close orders on your own positions ({e})")
+
     warning = _token_warning()
     if warning:
         messages.append(warning)
@@ -706,15 +737,16 @@ def check_exits(send: bool = True) -> list[str]:
         return []
     ledger = load_ledger()
     open_ = [s for s in ledger.spreads if s.status == "open"]
-    if not open_:
+    manual = auto_close_manual()
+    if not open_ and not manual:
         return []
     import schwab_client
     import schwab_trading
 
     messages = []
     now = _now_et()
-    held = {p["symbol"]: p["quantity"] for p in
-            schwab_trading.option_positions(schwab_trading.get_account(include_positions=True))}
+    positions = schwab_trading.option_positions(schwab_trading.get_account(include_positions=True))
+    held = {p["symbol"]: p["quantity"] for p in positions}
     for s in open_:
         exp = dt.date.fromisoformat(s.expiration_date)
         short_q, long_q = held.get(s.short_symbol, 0), held.get(s.long_symbol, 0)
@@ -777,6 +809,195 @@ def check_exits(send: bool = True) -> list[str]:
             messages.append(f"{verdict} -- NOT sent: STOP_TRADING file present")
             continue
         messages.append(_send_close(s, v))
+    if manual:
+        messages += _check_manual_exits(positions, send)
+    return messages
+
+
+def _check_manual_exits(positions: list[dict], send: bool) -> list[str]:
+    """The user's own vertical credit spreads at 75%+ profit (AUTO_CLOSE_MANUAL_AT_PROFIT):
+    close at the mid. Only that rule (never breach or DTE), only clean two-leg verticals of
+    equal size, never when any working order already covers one of the legs."""
+    import schwab_client
+    import schwab_trading
+    from real_dashboard import _pair_legs
+
+    ledger = load_ledger()
+    cathies = {sym for x in ledger.spreads if x.status in ("pending", "open", "closing")
+               for sym in (x.short_symbol, x.long_symbol)}
+    ours_working = {sym for m in ledger.manual_closes if m.status == "working"
+                    for sym in (m.short_symbol, m.long_symbol)}
+    busy = set(ours_working)
+    for o in schwab_trading.recent_orders(days=2):
+        if o.get("status") in ("WORKING", "QUEUED", "PENDING_ACTIVATION", "ACCEPTED", "NEW",
+                               "AWAITING_MANUAL_REVIEW", "AWAITING_RELEASE_TIME", "PENDING_ACKNOWLEDGEMENT",
+                               "PENDING_REPLACE", "PENDING_CANCEL"):
+            busy |= {leg.get("symbol") for leg in o.get("legs") or []}
+
+    groups = {}
+    for p in positions:
+        if p["symbol"] not in cathies and p.get("quantity"):
+            groups.setdefault((p["underlying"], p["expiration"], p["option_type"]), []).append(p)
+    messages = []
+    today = _now_et().date()
+    for (underlying, expiration, option_type), legs in sorted(groups.items(), key=lambda kv: str(kv[0])):
+        for sh, lg, qty in _pair_legs(legs):
+            if not (sh and lg):
+                continue
+            qty = int(qty)
+            credit_spread = lg["strike"] < sh["strike"] if option_type == "put" else lg["strike"] > sh["strike"]
+            label = (f"{underlying} {'bull_put' if option_type == 'put' else 'bear_call'} "
+                     f"{sh['strike']:g}/{lg['strike']:g} exp {expiration} x{qty} (MANUAL)")
+            if not credit_spread or qty != -sh["quantity"] or qty != lg["quantity"]:
+                continue  # not a clean vertical credit spread: left alone
+            if {sh["symbol"], lg["symbol"]} & busy:
+                messages.append(f"{label}: an order is already working on it; left alone")
+                continue
+            credit = (sh.get("average_price") or 0) - (lg.get("average_price") or 0)
+            if not credit > 0:
+                continue
+            fake = LiveSpread(id="manual", symbol=underlying,
+                              spread_type="bull_put" if option_type == "put" else "bear_call",
+                              short_strike=sh["strike"], long_strike=lg["strike"], expiration_date=expiration,
+                              contracts=qty, staged_at="", short_symbol=sh["symbol"], long_symbol=lg["symbol"],
+                              fill_credit=credit)
+            try:
+                exp = dt.date.fromisoformat(expiration)
+                v = exit_verdict(fake, schwab_client.get_option_chain(underlying, exp, exp), today)
+            except Exception as e:
+                messages.append(f"{label}: couldn't check ({e})")
+                continue
+            if v["problem"] or v["mid"] is None:
+                messages.append(f"{label}: can't check: {v['problem']}")
+                continue
+            target = PROFIT_TAKE_FRACTION * credit
+            if v["mid"] > target:
+                messages.append(f"{label}: not at 75% yet (cost to close {v['mid']:.2f}, target <= {target:.2f}, "
+                                f"opened for {credit:.2f})")
+                continue
+            debit = max(0.01, round(max(v["mid"], 0.0), 2))
+            verdict = (f"{label}: CLOSE -- 75%+ of the credit captured; cost to close {v['mid']:.2f} "
+                       f"(opened for {credit:.2f}); limit {debit:.2f} debit (mid)")
+            if not send:
+                messages.append(verdict + ("" if regular_session_open() else " [market closed: would wait]"))
+                continue
+            if not regular_session_open():
+                messages.append(f"{verdict} -- market closed, will close during the next session")
+                continue
+            if kill_switch_on():
+                messages.append(f"{verdict} -- NOT sent: STOP_TRADING file present")
+                continue
+            messages.append(_send_manual_close(fake, label, credit, debit, qty))
+    return messages
+
+
+def _send_manual_close(fake: LiveSpread, label: str, credit: float, debit: float, qty: int) -> str:
+    import schwab_execution
+    import schwab_trading
+
+    order = schwab_trading.build_close_order(fake.spread_type, fake.short_symbol, fake.long_symbol,
+                                             qty, debit).build()
+    try:
+        status, body = schwab_trading.preview_order(order)
+        rejects = ((body.get("orderValidationResult") or {}).get("rejects") if isinstance(body, dict) else None)
+    except Exception as e:
+        status, rejects = 0, [str(e)]
+    if status >= 400 or rejects or status == 0:
+        msg = f"{label}: close NOT sent, Schwab's preview refused it (HTTP {status}): {str(rejects)[:300]}"
+        _log(msg)
+        return msg
+    record = ManualClose(label=label, short_symbol=fake.short_symbol, long_symbol=fake.long_symbol,
+                         quantity=qty, credit=round(credit, 4), limit_debit=debit, sent_at=_now_et().isoformat())
+    _mutate(lambda lg: lg.manual_closes.append(record))  # recorded before sending, like submit
+    try:
+        order_id = schwab_execution.place_order(order)
+    except schwab_execution.OrderError as e:
+        def _drop(lg: LiveLedger):
+            for m in lg.manual_closes:
+                if m.sent_at == record.sent_at and m.short_symbol == record.short_symbol and m.status == "working":
+                    m.status, m.done_at = "not_filled", _now_et().isoformat()
+        _mutate(_drop)
+        msg = f"{label}: close order NOT accepted by Schwab: {e}"
+        _log(msg)
+        _push(f"Cathie couldn't close your position: {msg}")
+        return msg
+    except Exception as e:
+        msg = f"{label}: close order result unknown ({e}); checking at the next reconcile"
+        _log(msg)
+        return msg
+    if order_id is None:
+        found = schwab_execution.find_recent_order({fake.short_symbol, fake.long_symbol}, closing=True,
+                                                   exclude_ids=_known_order_ids())
+        order_id = found.get("orderId") if found else None
+
+    def _record(lg: LiveLedger):
+        for m in lg.manual_closes:
+            if m.sent_at == record.sent_at and m.short_symbol == record.short_symbol:
+                m.order_id = order_id
+    _mutate(_record)
+    msg = f"{label}: CLOSING YOUR POSITION -- 75%+ profit; sent at {debit:.2f} debit, Schwab order {order_id}"
+    _log(msg)
+    _push(f"Cathie is closing YOUR position: {msg}.")
+    return msg
+
+
+def _reconcile_manual_closes(now: dt.datetime) -> list[str]:
+    """Fills/cancels for close orders code sent on the user's own spreads. Cancels only
+    these orders (after 30 min unfilled), never the user's own."""
+    import schwab_execution
+
+    messages = []
+    for m in [m for m in load_ledger().manual_closes if m.status == "working"]:
+        sent = _parse_et(m.sent_at)
+        age_min = (now - sent).total_seconds() / 60 if sent else 0
+        update = {}
+        try:
+            order_id = m.order_id
+            if order_id is None:
+                found = schwab_execution.find_recent_order({m.short_symbol, m.long_symbol},
+                                                           since_minutes=int(age_min) + 3, closing=True,
+                                                           exclude_ids=_known_order_ids())
+                if found:
+                    order_id = update["order_id"] = found.get("orderId")
+                elif age_min > 10:
+                    update.update(status="not_filled", done_at=now.isoformat())
+            if order_id is not None:
+                record = schwab_execution.get_order(order_id)
+                status = record.get("status")
+                if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL")
+                        and age_min >= UNFILLED_CANCEL_MINUTES):
+                    schwab_execution.cancel_order(order_id)
+                    record = schwab_execution.wait_for_status(order_id, {"CANCELED"}, timeout=30)
+                    status = record.get("status")
+                if status == "FILLED":
+                    net = fill_net_credit(record)
+                    debit = round(-net, 4) if net is not None else m.limit_debit
+                    update.update(status="filled", fill_debit=debit, done_at=now.isoformat(),
+                                  realized_pnl=round((m.credit - debit) * 100 * m.quantity, 2))
+                elif status in ("CANCELED", "REJECTED", "EXPIRED"):
+                    update.update(status="not_filled", done_at=now.isoformat())
+        except Exception as e:
+            messages.append(f"{m.label}: couldn't check its close order with Schwab ({e})")
+            continue
+        if not update:
+            continue
+
+        def _apply(lg: LiveLedger, key=(m.sent_at, m.short_symbol), upd=update):
+            for x in lg.manual_closes:
+                if (x.sent_at, x.short_symbol) == key and x.status == "working":
+                    for k, val in upd.items():
+                        setattr(x, k, val)
+        _mutate(_apply)
+        if update.get("status") == "filled":
+            msg = (f"{m.label}: CLOSED at {update['fill_debit']:.2f} debit (75%+ profit); "
+                   f"P&L ${update['realized_pnl']:+,.2f}")
+            _push(f"Cathie closed YOUR position: {msg}.")
+        elif update.get("status") == "not_filled":
+            msg = f"{m.label}: close order not filled; will retry at the current mid if still at 75%"
+        else:
+            msg = f"{m.label}: close order found at Schwab ({update.get('order_id')})"
+        _log(msg)
+        messages.append(msg)
     return messages
 
 
@@ -809,8 +1030,9 @@ def _mark_closed_elsewhere(spread_id: str, rule: str):
 
 def _known_order_ids() -> set:
     """Every Schwab order ID the ledger already accounts for."""
-    return {i for x in load_ledger().spreads
-            for i in (x.order_id, x.close_order_id, *x.past_close_order_ids) if i is not None}
+    ledger = load_ledger()
+    return ({i for x in ledger.spreads for i in (x.order_id, x.close_order_id, *x.past_close_order_ids)
+             if i is not None} | {m.order_id for m in ledger.manual_closes if m.order_id is not None})
 
 
 def _send_close(s: LiveSpread, v: dict) -> str:

@@ -79,9 +79,21 @@ def _spread_type(sh, lg, option_type):
     return ("Short " if sh else "Long ") + option_type
 
 
-def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.date | None = None) -> list[dict]:
+def _manual_note(sh, lg, credit, option_type, qty, auto_close: bool) -> str:
+    if not auto_close:
+        return "yours; never touched by Cathie"
+    clean = (sh and lg and credit is not None and credit > 0 and qty == -sh["quantity"] == lg["quantity"]
+             and (lg["strike"] < sh["strike"] if option_type == "put" else lg["strike"] > sh["strike"]))
+    if not clean:
+        return "yours; not a simple credit spread, so never auto-closed"
+    return f"yours; auto-close at <= {credit * 0.25:.2f} (75% profit) only"
+
+
+def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.date | None = None,
+          auto_close: bool = False) -> list[dict]:
     """Dashboard rows. account_positions: schwab_trading.option_positions(); orders:
-    schwab_trading.recent_orders(); ledger: live_trading.LiveLedger."""
+    schwab_trading.recent_orders(); ledger: live_trading.LiveLedger. auto_close: the
+    user turned on AUTO_CLOSE_MANUAL_AT_PROFIT."""
     today = today or dt.date.today()
     by_symbol = {p["symbol"]: p for p in account_positions}
     closing = _closing_orders(orders)
@@ -147,7 +159,8 @@ def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.d
                 "Owner": "MANUAL", "Sym": underlying, "Type": _spread_type(sh, lg, option_type),
                 "Strikes": strikes, "Qty": int(qty), "Expiry": _exp(expiration), "DTE": _dte(expiration, today),
                 "Status": status, "Credit": f"{credit:.2f}" if credit is not None else "",
-                "Now": f"{now:.2f}" if now is not None else "", "P&L": _money(pnl), "Note": "yours; never touched by Cathie",
+                "Now": f"{now:.2f}" if now is not None else "", "P&L": _money(pnl),
+                "Note": _manual_note(sh, lg, credit, option_type, qty, auto_close),
             })
 
     # Cathie's recent trades that aren't held: waiting, sent, or finished.
@@ -221,6 +234,8 @@ def summary(rows: list[dict], balances: dict | None, ledger, error: str | None =
         "cathie_realized": sum(s.realized_pnl or 0 for s in ledger.spreads if s.status == "closed"),
         "manual_open": sum(1 for r in rows if r["Owner"] == "MANUAL"),
         "manual_open_pnl": pnl_sum("MANUAL", ("OPEN", "CLOSING")),
+        "manual_auto_closed_pnl": sum(m.realized_pnl or 0 for m in getattr(ledger, "manual_closes", [])
+                                      if m.status == "filled"),
         "orders_today": live_trading.orders_sent_today(ledger),
         "daily_limit": live_trading.MAX_ORDERS_PER_DAY,
         "error": error,
@@ -245,5 +260,5 @@ def fetch() -> tuple[list[dict], dict]:
         orders = schwab_trading.recent_orders(days=2)
     except Exception as e:
         errors.append(f"orders: {e}")
-    rows = build(positions, orders, ledger)
+    rows = build(positions, orders, ledger, auto_close=live_trading.auto_close_manual())
     return rows, summary(rows, balances, ledger, "; ".join(errors) or None)

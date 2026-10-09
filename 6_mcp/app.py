@@ -364,6 +364,8 @@ class Trader:
             color = "#2ecc71" if x >= 0 else "#e74c3c"
             return f"<span style='color:{color}'>{'+' if x >= 0 else '-'}${abs(x):,.2f}</span>"
         err = f"<br/><span style='color:#e74c3c'>{sm['error']}</span>" if sm.get("error") else ""
+        auto = (f", auto-closed by Cathie {pnl(sm['manual_auto_closed_pnl'])}"
+                if sm.get("manual_auto_closed_pnl") else "")
         return (
             "<div style='text-align:center;font-size:12px;padding:3px;line-height:1.6;'>"
             "<b>REAL SCHWAB ACCOUNT</b> "
@@ -373,7 +375,7 @@ class Trader:
             f"CATHIE: {sm['cathie_open']} open, unrealized {pnl(sm['cathie_open_pnl'])}, "
             f"realized {pnl(sm['cathie_realized'])} &nbsp;|&nbsp; orders today {sm['orders_today']}/{sm['daily_limit']}<br/>"
             f"MANUAL: {sm['manual_open']} open, unrealized {pnl(sm['manual_open_pnl'])}"
-            f"{err}</div>"
+            f"{auto}{err}</div>"
         )
 
     def get_real_positions_html(self) -> str:
