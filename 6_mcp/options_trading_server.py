@@ -1304,14 +1304,15 @@ async def close_credit_spread(
         from options_models import OptionsAccount
         from database import read_account, write_account, write_log
 
-        # Real Schwab trades (approve mode) aren't closed here yet -- see CLAUDE.md step 5.
+        # Real Schwab trades (approve mode) are closed by code, not here -- live_trading.check_exits.
         import live_trading
         real = live_trading.load_ledger().get(position_id) if live_trading.execution_mode() != "simulated" else None
         if real is not None:
             return json.dumps({"error": (
                 f"{position_id} is a REAL Schwab trade ({real.label()}, status {real.status}). "
-                "Closing real positions isn't automated yet: the user closes it by hand in "
-                "thinkorswim. Nothing was closed. Tell the user if you think it should be closed, and why."
+                "Real positions are closed automatically by code when an exit rule fires (75% "
+                "profit, breach, 7 DTE), not by this tool. Nothing was closed. If you think it "
+                "should be closed for another reason, say so in your summary."
             )})
 
         options_data = read_account(f"{name.lower()}_options")

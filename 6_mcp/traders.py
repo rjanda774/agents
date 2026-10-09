@@ -110,7 +110,19 @@ class Trader:
 
     async def get_account_report(self, accounts_server=None) -> str:
         if self.name in TRADERS_WITH_OPTIONS_TOOL:
-            return self._get_options_account_summary()
+            summary = self._get_options_account_summary()
+            import live_trading
+            if live_trading.execution_mode() == "approve":
+                # Real money: show the live Schwab balances, and label the paper account's
+                # cash as simulated, so her summaries don't report paper cash as her balance.
+                data = json.loads(summary)
+                data["paper_cash_simulated"] = data.pop("cash", None)
+                try:
+                    data["real_schwab_account"] = await asyncio.to_thread(live_trading.real_account_snapshot)
+                except Exception as e:
+                    data["real_schwab_account"] = {"error": f"couldn't read the real account: {e}"}
+                summary = json.dumps(data)
+            return summary
         account = await read_accounts_resource(self.name, accounts_server)
         account_json = json.loads(account)
         account_json.pop("portfolio_value_time_series", None)
@@ -202,6 +214,13 @@ class Trader:
                     print(f"{self.name} live: {msg}")
             except Exception as e:
                 print(f"{self.name}: live-trade reconcile failed: {e}")
+            # Exits on real positions (step 5): code checks the rules and sends the close
+            # orders itself -- Cathie can't close real positions. Best effort, like reconcile.
+            try:
+                for msg in await asyncio.to_thread(live_trading.check_exits):
+                    print(f"{self.name} exits: {msg}")
+            except Exception as e:
+                print(f"{self.name}: real-position exit check failed: {e}")
 
         strategy = await read_strategy_resource(self.name, accounts_server)
 
