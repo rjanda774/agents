@@ -39,6 +39,16 @@ def _show_ledger(live_trading):
         elif s.status == "pending":
             extra = f"  Schwab order {s.order_id}, limit {s.limit_credit:.2f}"
         print(f"  [{s.id}] {s.status.upper():<7} {s.label()}{extra}")
+    # Today's trades that are already finished (not filled, rejected, expired), so the
+    # outcome of an order sent earlier is visible here too.
+    today = live_trading._now_et().date().isoformat()
+    done = [s for s in ledger.spreads if s.status not in live_trading.ACTIVE_STATUSES
+            and (s.submitted_at or s.staged_at or "")[:10] == today]
+    if done:
+        print("Earlier today:")
+        for s in done:
+            last = s.events[-1] if s.events else ""
+            print(f"  [{s.id}] {s.status.upper():<10} {s.label()}" + (f"  ({last})" if last else ""))
     print()
 
 
