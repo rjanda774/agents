@@ -102,6 +102,50 @@ def is_configured() -> bool:
     return bool(SCHWAB_APP_KEY and SCHWAB_APP_SECRET and os.path.exists(SCHWAB_TOKEN_PATH))
 
 
+def _read_token():
+    """Token file contents. Retries briefly: another process may be replacing the file
+    at this instant (on Windows a replace can't happen while it's open, and vice versa)."""
+    import json
+    for attempt in range(5):
+        try:
+            with open(SCHWAB_TOKEN_PATH, "rb") as f:
+                return json.load(f)
+        except (PermissionError, ValueError):
+            if attempt == 4:
+                raise
+            time.sleep(0.2)
+
+
+def _write_token(token, *args, **kwargs):
+    """Write a refreshed token atomically (temp file, then replace). schwab-py's own
+    writer truncates the file first, so another process reading at that moment saw an
+    empty or half-written file: the trading floor, approve_orders.py and the dashboard
+    all use this token."""
+    import json
+    tmp = f"{SCHWAB_TOKEN_PATH}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(token, f)
+    for attempt in range(10):
+        try:
+            os.replace(tmp, SCHWAB_TOKEN_PATH)
+            return
+        except PermissionError:  # Windows: a reader has the file open right now
+            if attempt == 9:
+                raise
+            time.sleep(0.2)
+
+
+def token_age_days() -> float | None:
+    """Days since the current login (schwab_auth_setup.py). Schwab's refresh token
+    lasts 7 days from that login; after that every call fails until a new login.
+    None if the token file can't be read."""
+    try:
+        created = _read_token().get("creation_timestamp")
+        return (time.time() - float(created)) / 86400 if created else None
+    except Exception:
+        return None
+
+
 def _get_client():
     global _client
     if _client is not None:
@@ -120,8 +164,8 @@ def _get_client():
             )
         try:
             import schwab.auth
-            _client = schwab.auth.client_from_token_file(
-                SCHWAB_TOKEN_PATH, SCHWAB_APP_KEY, SCHWAB_APP_SECRET
+            _client = schwab.auth.client_from_access_functions(
+                SCHWAB_APP_KEY, SCHWAB_APP_SECRET, _read_token, _write_token
             )
         except ImportError as e:
             raise SchwabNotConfiguredError(

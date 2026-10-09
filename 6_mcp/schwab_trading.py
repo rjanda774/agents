@@ -209,6 +209,25 @@ def build_open_order(spread_type: str, short_symbol: str, long_symbol: str,
     raise ValueError(f"spread_type must be 'bull_put' or 'bear_call', got {spread_type!r}")
 
 
+def build_close_order(spread_type: str, short_symbol: str, long_symbol: str,
+                      contracts: int, net_debit: float):
+    """A schwab-py OrderBuilder that closes a credit spread as one NET_DEBIT limit order
+    (buy back the short leg, sell the long one; DAY, regular session) -- never a market
+    order. Symbols must be the contracts actually held."""
+    from schwab.orders.options import bear_call_vertical_close, bull_put_vertical_close
+
+    if contracts < 1:
+        raise ValueError("contracts must be at least 1")
+    if not (net_debit > 0):
+        raise ValueError(f"net debit must be positive, got {net_debit}")
+    price = f"{net_debit:.2f}"
+    if spread_type == "bull_put":
+        return bull_put_vertical_close(long_symbol, short_symbol, contracts, price)
+    if spread_type == "bear_call":
+        return bear_call_vertical_close(short_symbol, long_symbol, contracts, price)
+    raise ValueError(f"spread_type must be 'bull_put' or 'bear_call', got {spread_type!r}")
+
+
 def mask_account_fields(value):
     """Copy of a Schwab JSON response with every account-identifying value masked,
     safe to print or paste into a chat."""

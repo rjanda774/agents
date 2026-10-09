@@ -26,7 +26,13 @@ Hard limits on real orders, all enforced here in code (not by prompt):
 Unfilled orders are cancelled once they've been working 30+ minutes, at the next
 reconcile (each trading cycle, or whenever approve_orders.py runs).
 
-Exits are NOT automated yet (step 5): real positions are closed by hand in thinkorswim.
+Exits (step 5) are automatic, run by code each cycle (check_exits), never by Cathie:
+  - 7 days or less to expiration, or the stock past the short strike: close at the
+    natural price (pay the ask on the short leg, take the bid on the long) so it fills.
+  - 75%+ of the credit captured (cost to close <= 25% of it): close at the mid.
+  Only during the regular session; previewed first; a close left working 30+ minutes is
+  cancelled at the next reconcile and re-sent at the then-current price. STOP_TRADING
+  stops closes too. The user's own positions are never touched.
 """
 import datetime as dt
 import json
@@ -49,8 +55,16 @@ UNFILLED_CANCEL_MINUTES = 30
 MIN_NET_PREMIUM = 50.0
 MAX_SHORT_DELTA = 0.20
 MIN_DTE, MAX_DTE = 25, 45
+# Exits (step 5, user's choice 2026-10-09: automatic, same rules as paper trades).
+PROFIT_TAKE_FRACTION = 0.25   # close when the cost to close is <= 25% of the credit
+CLOSE_AT_DTE = 7              # close at 7 days or less to expiration
+MISSING_CONFIRM_MINUTES = 30  # legs gone on two checks this far apart = closed outside Cathie
+# Schwab's refresh token lasts 7 days from the login; stop new trades in its last 12h.
+TOKEN_LIFETIME_DAYS = 7.0
+TOKEN_HALT_OPENS_DAYS = 6.5
+TOKEN_WARN_DAYS = 6.0
 
-ACTIVE_STATUSES = {"staged", "pending", "open"}
+ACTIVE_STATUSES = {"staged", "pending", "open", "closing"}
 
 
 def execution_mode() -> str:
@@ -100,7 +114,8 @@ class LiveSpread(BaseModel):
     # staged -> pending (sent to Schwab) -> open (filled)
     # staged -> rejected (by the user) / expired (not approved the same day)
     # pending -> not_filled (cancelled, rejected or expired at Schwab)
-    status: Literal["staged", "rejected", "expired", "pending", "open", "not_filled", "closed"] = "staged"
+    # open -> closing (close order sent) -> closed; closing -> open if the close didn't fill
+    status: Literal["staged", "rejected", "expired", "pending", "open", "not_filled", "closing", "closed"] = "staged"
     staged_at: str
     staged_credit: float | None = None  # Cathie's net credit per spread when she proposed it
     rationale: str = ""
@@ -113,6 +128,16 @@ class LiveSpread(BaseModel):
     filled_at: str | None = None
     net_premium: float | None = None
     max_loss: float | None = None
+    # Closing (step 5)
+    close_rule: str | None = None          # profit / breach / dte / expired / outside
+    close_order_id: int | None = None
+    close_limit_debit: float | None = None
+    close_submitted_at: str | None = None
+    close_fill_debit: float | None = None  # actual net debit per spread paid to close
+    closed_at: str | None = None
+    realized_pnl: float | None = None
+    past_close_order_ids: list[int] = []   # earlier close attempts (cancelled/rejected)
+    legs_missing_since: str | None = None  # first check that found its legs gone at Schwab
     events: list[str] = []
 
     def note(self, text: str):
@@ -129,6 +154,7 @@ class LiveSpread(BaseModel):
 
 class LiveLedger(BaseModel):
     spreads: list[LiveSpread] = []
+    token_warned_on: str | None = None  # ET date of the last "Schwab login expiring" push
 
     def get(self, spread_id: str) -> LiveSpread | None:
         return next((s for s in self.spreads if s.id == spread_id), None)
@@ -193,6 +219,14 @@ def new_trades_blocked() -> str | None:
         return None
     if kill_switch_on():
         return "real trading is stopped (STOP_TRADING file present)"
+    try:
+        import schwab_client
+        age = schwab_client.token_age_days()
+    except Exception:
+        age = None
+    if age is not None and age >= TOKEN_HALT_OPENS_DAYS:
+        return (f"the Schwab login is {age:.1f} days old and expires at {TOKEN_LIFETIME_DAYS:g}; "
+                "run `uv run schwab_auth_setup.py` to renew it")
     ledger = load_ledger()
     sent = orders_sent_today(ledger)
     if sent >= MAX_ORDERS_PER_DAY:
@@ -206,7 +240,7 @@ def new_trades_blocked() -> str | None:
 def users_own_underlyings(positions: list[dict], ledger: LiveLedger) -> set[str]:
     """Underlyings the user holds options on themselves: Schwab option positions whose
     contract symbols aren't legs of Cathie's own live spreads."""
-    cathies = {sym for s in ledger.spreads if s.status in ("pending", "open")
+    cathies = {sym for s in ledger.spreads if s.status in ("pending", "open", "closing")
                for sym in (s.short_symbol, s.long_symbol) if sym}
     return {p["underlying"] for p in positions if p.get("symbol") not in cathies and p.get("underlying")}
 
@@ -592,8 +626,350 @@ def reconcile() -> list[str]:
             messages.append(msg)
             _log(msg)
             if update.get("status") == "open":
-                _push(f"Cathie's REAL trade filled: {msg}. Manage the exit in thinkorswim (exits aren't automated yet).")
+                _push(f"Cathie's REAL trade filled: {msg}. Exits are automatic (75% profit, breach, 7 DTE).")
+
+    for s in [s for s in load_ledger().spreads if s.status == "closing"]:
+        try:
+            msg = _reconcile_closing(s, now)
+        except Exception as e:
+            msg = f"{s.label()}: couldn't check its close order with Schwab ({e})"
+        if msg:
+            messages.append(msg)
+
+    warning = _token_warning()
+    if warning:
+        messages.append(warning)
     return messages
+
+
+# ---------------------------------------------------------------- exits (code, step 5)
+
+def _cents_up(x: float) -> float:
+    return math.ceil(round(x * 100, 6)) / 100
+
+
+def exit_verdict(spread: LiveSpread, chain: dict, today: dt.date) -> dict:
+    """Which exit rule (if any) an open real spread meets, from Schwab's chain, and the
+    limit debit to close it at. Pure: no network, no ledger. Keys: rule (None, 'dte',
+    'breach' or 'profit'), debit, mid, natural, price, dte, lines, problem."""
+    exp = dt.date.fromisoformat(spread.expiration_date)
+    v = {"rule": None, "debit": None, "mid": None, "natural": None, "price": None,
+         "dte": (exp - today).days, "lines": [], "problem": None}
+    rows = (chain.get("expirations") or {}).get(spread.expiration_date) or {}
+    rows = rows.get("puts" if spread.spread_type == "bull_put" else "calls") or []
+    find = lambda sym, k: (next((r for r in rows if r.get("symbol") == sym), None)
+                           or next((r for r in rows if abs(r["strike"] - k) < 1e-6), None))
+    short, long_ = find(spread.short_symbol, spread.short_strike), find(spread.long_symbol, spread.long_strike)
+    price = chain.get("current_price")
+    v["price"] = price
+    if not (short and long_):
+        v["problem"] = "its strikes aren't in Schwab's chain right now"
+        return v
+    quotes = [short.get("bid"), short.get("ask"), long_.get("bid"), long_.get("ask")]
+    if not all(isinstance(q, (int, float)) and math.isfinite(q) and q >= 0 for q in quotes) or not quotes[1] > 0:
+        v["problem"] = "no usable quote on its legs right now"
+        return v
+    sb, sa, lb, la = quotes
+    mid = (sb + sa) / 2 - (lb + la) / 2
+    natural = sa - lb
+    v["mid"], v["natural"] = round(mid, 4), round(natural, 4)
+    credit = spread.fill_credit or spread.limit_credit or 0
+    v["lines"].append(f"stock ${price:,.2f}, {v['dte']} DTE, cost to close: mid {mid:.2f}, natural {natural:.2f} "
+                      f"(opened for {credit:.2f})" if isinstance(price, (int, float))
+                      else f"{v['dte']} DTE, cost to close: mid {mid:.2f}, natural {natural:.2f} (opened for {credit:.2f})")
+
+    breached = isinstance(price, (int, float)) and math.isfinite(price) and (
+        price < spread.short_strike if spread.spread_type == "bull_put" else price > spread.short_strike)
+    if v["dte"] <= CLOSE_AT_DTE or breached:
+        v["rule"] = "dte" if v["dte"] <= CLOSE_AT_DTE else "breach"
+        v["debit"] = max(0.01, min(_cents_up(natural), spread.width))
+    elif credit > 0 and mid <= PROFIT_TAKE_FRACTION * credit:
+        v["rule"] = "profit"
+        v["debit"] = max(0.01, round(max(mid, 0.0), 2))
+    return v
+
+
+RULE_TEXT = {
+    "dte": f"{CLOSE_AT_DTE} days or less to expiration",
+    "breach": "the stock is past the short strike",
+    "profit": f"{100 - PROFIT_TAKE_FRACTION * 100:.0f}%+ of the credit captured",
+    "expired": "expired",
+    "outside": "no longer in the Schwab account (closed outside Cathie?)",
+}
+
+
+def check_exits(send: bool = True) -> list[str]:
+    """Check every open real spread against the exit rules and, with send=True, close
+    the ones that meet one (regular session only, not with STOP_TRADING). send=False is
+    a dry run that only reports (approve_orders.py --exits). Returns what it found/did."""
+    if execution_mode() != "approve":
+        return []
+    ledger = load_ledger()
+    open_ = [s for s in ledger.spreads if s.status == "open"]
+    if not open_:
+        return []
+    import schwab_client
+    import schwab_trading
+
+    messages = []
+    now = _now_et()
+    held = {p["symbol"]: p["quantity"] for p in
+            schwab_trading.option_positions(schwab_trading.get_account(include_positions=True))}
+    for s in open_:
+        exp = dt.date.fromisoformat(s.expiration_date)
+        short_q, long_q = held.get(s.short_symbol, 0), held.get(s.long_symbol, 0)
+        if short_q >= 0 and long_q <= 0:
+            # Neither leg is held any more: expired, or closed outside Cathie (by hand).
+            # Before expiration that needs care: a Schwab reply missing its positions list
+            # would look exactly like this. So never when Schwab shows no option positions
+            # at all, and only once the legs have been gone on two checks 30+ min apart.
+            rule = "expired" if exp < now.date() else "outside"
+            if rule == "outside":
+                first = _parse_et(s.legs_missing_since)
+                if not held:
+                    messages.append(f"{s.label()}: Schwab reported no option positions at all; "
+                                    "not changing anything (check thinkorswim if that's wrong)")
+                    continue
+                if first is None or (now - first).total_seconds() < MISSING_CONFIRM_MINUTES * 60:
+                    if send and first is None:
+                        _set_missing(s.id, now.isoformat())
+                    messages.append(f"{s.label()}: its legs aren't in the Schwab account right now; "
+                                    f"if they're still gone in {MISSING_CONFIRM_MINUTES} min it's recorded as "
+                                    "closed outside Cathie")
+                    continue
+            if send:
+                _mark_closed_elsewhere(s.id, rule)
+            messages.append(f"{s.label()}: {RULE_TEXT[rule]}; recorded as closed" if send
+                            else f"{s.label()}: {RULE_TEXT[rule]}")
+            continue
+        if s.legs_missing_since and send:
+            _set_missing(s.id, None)  # legs are back: it was a glitch
+        if short_q > -s.contracts or long_q < s.contracts:
+            msg = (f"{s.label()}: Schwab holds {short_q:+g} short / {long_q:+g} long contracts, not the "
+                   f"spread's {s.contracts}; not closing anything automatically -- check thinkorswim")
+            messages.append(msg)
+            if send:
+                _log(msg)
+            continue
+        try:
+            chain = schwab_client.get_option_chain(s.symbol, exp, exp)
+            v = exit_verdict(s, chain, now.date())
+        except Exception as e:
+            messages.append(f"{s.label()}: couldn't check exits ({e})")
+            continue
+        detail = "; ".join(v["lines"])
+        if v["problem"]:
+            messages.append(f"{s.label()}: can't check exits: {v['problem']}")
+            continue
+        if not v["rule"]:
+            messages.append(f"{s.label()}: no exit rule met ({detail})")
+            continue
+        how = "natural" if v["rule"] in ("dte", "breach") else "mid"
+        verdict = f"{s.label()}: CLOSE -- {RULE_TEXT[v['rule']]}; {detail}; limit {v['debit']:.2f} debit ({how})"
+        if not send:
+            messages.append(verdict + (" [market closed: would wait for the session]"
+                                       if not regular_session_open() else ""))
+            continue
+        if not regular_session_open():
+            messages.append(f"{verdict} -- market closed, will close during the next session")
+            continue
+        if kill_switch_on():
+            messages.append(f"{verdict} -- NOT sent: STOP_TRADING file present")
+            continue
+        messages.append(_send_close(s, v))
+    return messages
+
+
+def _set_missing(spread_id: str, when: str | None):
+    def _fn(lg: LiveLedger):
+        x = lg.get(spread_id)
+        if x is not None and x.status == "open":
+            x.legs_missing_since = when
+    _mutate(_fn)
+
+
+def _mark_closed_elsewhere(spread_id: str, rule: str):
+    def _fn(lg: LiveLedger):
+        x = lg.get(spread_id)
+        if x is None or x.status != "open":
+            return None
+        x.status, x.close_rule, x.closed_at = "closed", rule, _now_et().isoformat()
+        if rule == "expired":
+            x.realized_pnl = x.net_premium  # assumed expired worthless
+            x.note("expired; no longer held at Schwab. Recorded as expired worthless -- check thinkorswim if not")
+        else:
+            x.note("no longer held at Schwab before expiration (closed by hand?); P&L unknown here")
+        return x.label()
+    label = _mutate(_fn)
+    if label:
+        msg = f"{label}: {RULE_TEXT[rule]}; recorded as closed"
+        _log(msg)
+        _push(f"Cathie's REAL position {msg}.")
+
+
+def _known_order_ids() -> set:
+    """Every Schwab order ID the ledger already accounts for."""
+    return {i for x in load_ledger().spreads
+            for i in (x.order_id, x.close_order_id, *x.past_close_order_ids) if i is not None}
+
+
+def _send_close(s: LiveSpread, v: dict) -> str:
+    """Preview, mark closing, send. Marked closing BEFORE sending (like submit) so a crash
+    mid-send leaves a record that reconcile can match to the real order."""
+    import schwab_execution
+    import schwab_trading
+
+    debit = v["debit"]
+    order = schwab_trading.build_close_order(s.spread_type, s.short_symbol, s.long_symbol,
+                                             s.contracts, debit).build()
+    try:
+        status, body = schwab_trading.preview_order(order)
+        rejects = ((body.get("orderValidationResult") or {}).get("rejects") if isinstance(body, dict) else None)
+    except Exception as e:
+        status, rejects = 0, [str(e)]
+    if status >= 400 or rejects or status == 0:
+        msg = f"{s.label()}: close NOT sent, Schwab's preview refused it (HTTP {status}): {str(rejects)[:300]}"
+        _log(msg)
+        _push(f"Cathie couldn't close a REAL position: {msg}. Check it in thinkorswim.")
+        return msg
+
+    rule = v["rule"]
+
+    def _mark(lg: LiveLedger):
+        x = lg.get(s.id)
+        if x is None or x.status != "open":
+            return False
+        x.status, x.close_rule, x.close_limit_debit = "closing", rule, debit
+        x.close_submitted_at, x.close_order_id = _now_et().isoformat(), None
+        x.note(f"closing ({RULE_TEXT[rule]}) at {debit:.2f} debit")
+        return True
+    if not _mutate(_mark):
+        return f"{s.label()}: no longer open; close not sent"
+
+    try:
+        order_id = schwab_execution.place_order(order)
+    except schwab_execution.OrderError as e:
+        def _back(lg: LiveLedger):
+            x = lg.get(s.id)
+            if x and x.status == "closing":
+                x.status, x.close_submitted_at = "open", None
+                x.note(f"Schwab didn't accept the close order: {e}")
+        _mutate(_back)
+        msg = f"{s.label()}: close order NOT accepted by Schwab: {e}"
+        _log(msg)
+        _push(f"Cathie couldn't close a REAL position: {msg}. Check it in thinkorswim.")
+        return msg
+    except Exception as e:
+        # Unknown whether it reached Schwab: stay 'closing'; reconcile looks it up.
+        msg = f"{s.label()}: close order result unknown ({e}); checking at the next reconcile"
+        _log(msg)
+        return msg
+    if order_id is None:
+        found = schwab_execution.find_recent_order({s.short_symbol, s.long_symbol}, closing=True,
+                                                   exclude_ids=_known_order_ids())
+        order_id = found.get("orderId") if found else None
+
+    def _record(lg: LiveLedger):
+        x = lg.get(s.id)
+        if x:
+            x.close_order_id = order_id
+            x.note(f"close sent; Schwab order {order_id}" if order_id else "close sent; order ID not yet known")
+    _mutate(_record)
+    msg = (f"{s.label()}: CLOSING -- {RULE_TEXT[rule]}; sent at {debit:.2f} debit, Schwab order {order_id}")
+    _log(msg)
+    _push(f"Cathie is closing a REAL position: {msg}.")
+    return msg
+
+
+def _reconcile_closing(s: LiveSpread, now: dt.datetime) -> str | None:
+    """reconcile() for one 'closing' spread: record the fill, or put it back to 'open'
+    if the close was cancelled/rejected/expired, cancelling it first if it's been
+    working 30+ minutes. The next check_exits re-sends it at the current price."""
+    import schwab_execution
+
+    order_id, update = s.close_order_id, {}
+    sent_at = _parse_et(s.close_submitted_at)
+    age_min = (now - sent_at).total_seconds() / 60 if sent_at else 0
+    if order_id is None:
+        # Only orders entered since this close was sent (plus a little slack), so an
+        # earlier, cancelled close attempt on the same legs can't be picked up.
+        found = schwab_execution.find_recent_order({s.short_symbol, s.long_symbol},
+                                                   since_minutes=int(age_min) + 3, closing=True,
+                                                   exclude_ids=_known_order_ids())
+        if found:
+            order_id = found.get("orderId")
+            update["close_order_id"] = order_id
+        elif age_min > 10:
+            update.update(status="open", close_submitted_at=None,
+                          note="no close order found at Schwab; will retry")
+    if order_id is not None:
+        record = schwab_execution.get_order(order_id)
+        status = record.get("status")
+        if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL")
+                and age_min >= UNFILLED_CANCEL_MINUTES):
+            schwab_execution.cancel_order(order_id)
+            record = schwab_execution.wait_for_status(order_id, {"CANCELED"}, timeout=30)
+            status = record.get("status")
+            update["note"] = f"close unfilled after {age_min:.0f} min; cancelled (Schwab order {order_id})"
+        if status == "FILLED":
+            net = fill_net_credit(record)
+            debit = round(-net, 4) if net is not None else s.close_limit_debit
+            credit = s.fill_credit or s.limit_credit or 0
+            pnl = round((credit - debit) * 100 * s.contracts, 2)
+            update.update(status="closed", close_fill_debit=debit, closed_at=now.isoformat(),
+                          realized_pnl=pnl,
+                          note=f"CLOSED at {debit:.2f} debit ({RULE_TEXT.get(s.close_rule, s.close_rule)}); "
+                               f"P&L ${pnl:+,.2f} (Schwab order {order_id})")
+        elif status in ("CANCELED", "REJECTED", "EXPIRED"):
+            why = update.get("note") or f"close order {order_id} {status}" + (
+                f": {record.get('statusDescription')}" if record.get("statusDescription") else "")
+            update.update(status="open", close_order_id=None, close_submitted_at=None,
+                          past_close_order_ids=[*s.past_close_order_ids, order_id],
+                          note=f"{why}; will retry at the current price")
+    if not update:
+        return None
+
+    def _apply(lg: LiveLedger):
+        x = lg.get(s.id)
+        if x is None or x.status != "closing":
+            return
+        for k, val in update.items():
+            if k != "note":
+                setattr(x, k, val)
+        if update.get("note"):
+            x.note(update["note"])
+    _mutate(_apply)
+    msg = f"{s.label()}: {update.get('note') or update.get('status')}"
+    _log(msg)
+    if update.get("status") == "closed":
+        _push(f"Cathie's REAL position closed: {msg}.")
+    return msg
+
+
+def _token_warning() -> str | None:
+    """Push once a day when the Schwab login is in its last day."""
+    try:
+        import schwab_client
+        age = schwab_client.token_age_days()
+    except Exception:
+        return None
+    if age is None or age < TOKEN_WARN_DAYS:
+        return None
+    today = _now_et().date().isoformat()
+    left_h = max(0.0, (TOKEN_LIFETIME_DAYS - age) * 24)
+
+    def _fn(lg: LiveLedger):
+        if lg.token_warned_on == today:
+            return False
+        lg.token_warned_on = today
+        return True
+    msg = (f"Schwab login expires in about {left_h:.0f} hours (it lasts {TOKEN_LIFETIME_DAYS:g} days). "
+           "Run `uv run schwab_auth_setup.py` to renew it; new trades stop in its last 12 hours, "
+           "and automatic closes stop working once it expires.")
+    if _mutate(_fn):
+        _log(msg)
+        _push(msg)
+    return msg
 
 
 def ledger_summary() -> dict:
@@ -612,7 +988,8 @@ def ledger_summary() -> dict:
         "real_trades": rows,
         "orders_sent_today": orders_sent_today(ledger),
         "daily_limit": MAX_ORDERS_PER_DAY,
-        "note": ("Real positions (status 'open') are managed by the user in thinkorswim; "
-                 "close_credit_spread can't close them yet. 'staged' means waiting for the "
-                 "user's approval, 'pending' means sent to Schwab but not filled."),
+        "note": ("Real positions (status 'open') are closed automatically by code when an exit "
+                 "rule fires (75% profit, breach, 7 DTE); close_credit_spread can't close them. "
+                 "'staged' means waiting for the user's approval, 'pending' means sent to Schwab "
+                 "but not filled, 'closing' means a close order is working."),
     }

@@ -214,6 +214,13 @@ class Trader:
                     print(f"{self.name} live: {msg}")
             except Exception as e:
                 print(f"{self.name}: live-trade reconcile failed: {e}")
+            # Exits on real positions (step 5): code checks the rules and sends the close
+            # orders itself -- Cathie can't close real positions. Best effort, like reconcile.
+            try:
+                for msg in await asyncio.to_thread(live_trading.check_exits):
+                    print(f"{self.name} exits: {msg}")
+            except Exception as e:
+                print(f"{self.name}: real-position exit check failed: {e}")
 
         strategy = await read_strategy_resource(self.name, accounts_server)
 

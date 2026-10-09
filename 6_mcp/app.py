@@ -25,6 +25,7 @@ class Trader:
         self.model_name = model_name
         self.account = Account.get(name)
         self._last_log_html = None
+        self._real_cache = (0.0, None)
 
     def reload(self):
         self.account = Account.get(self.name)
@@ -328,6 +329,64 @@ class Trader:
             return f"<div style='text-align:center;color:#aaa;'>Options summary error: {e}</div>"
 
 
+    # ------------------------------------------------ real Schwab account (approve mode)
+
+    def has_real_account(self) -> bool:
+        if self.name != "Cathie":
+            return False
+        try:
+            import schwab_client
+            return schwab_client.is_configured()
+        except Exception:
+            return False
+
+    def _real_data(self):
+        """One Schwab read shared by the summary and the table (cached 60s)."""
+        import time
+        import real_dashboard
+        stamp, data = self._real_cache
+        if data is None or time.time() - stamp > 60:
+            data = real_dashboard.fetch()
+            self._real_cache = (time.time(), data)
+        return data
+
+    def get_real_summary(self) -> str:
+        try:
+            from datetime import datetime
+            _, sm = self._real_data()
+        except Exception as e:
+            return f"<div style='text-align:center;color:#aaa;'>Real account error: {e}</div>"
+
+        def money(x):
+            return "?" if x is None else f"${x:,.2f}"
+
+        def pnl(x):
+            color = "#2ecc71" if x >= 0 else "#e74c3c"
+            return f"<span style='color:{color}'>{'+' if x >= 0 else '-'}${abs(x):,.2f}</span>"
+        err = f"<br/><span style='color:#e74c3c'>{sm['error']}</span>" if sm.get("error") else ""
+        return (
+            "<div style='text-align:center;font-size:12px;padding:3px;line-height:1.6;'>"
+            "<b>REAL SCHWAB ACCOUNT</b> "
+            f"<span style='color:#aaa'>(as of {datetime.now().strftime('%H:%M')})</span><br/>"
+            f"<span style='color:#2ecc71'>Funds Available {money(sm['funds_available'])}</span> &nbsp;"
+            f"<span style='color:#3498db'>Day Net Liq {money(sm['net_liq'])}</span><br/>"
+            f"CATHIE: {sm['cathie_open']} open, unrealized {pnl(sm['cathie_open_pnl'])}, "
+            f"realized {pnl(sm['cathie_realized'])} &nbsp;|&nbsp; orders today {sm['orders_today']}/{sm['daily_limit']}<br/>"
+            f"MANUAL: {sm['manual_open']} open, unrealized {pnl(sm['manual_open_pnl'])}"
+            f"{err}</div>"
+        )
+
+    def get_real_positions_html(self) -> str:
+        """Every option position at Schwab, CATHIE (hers) or MANUAL (the user's), plus
+        her recent real trades that aren't open (real_dashboard.py)."""
+        import real_dashboard
+        try:
+            rows, _ = self._real_data()
+        except Exception as e:
+            return f"<div style='text-align:center;color:#aaa;'>Real positions error: {e}</div>"
+        return real_dashboard.to_html(rows)
+
+
 class TraderView:
     def __init__(self, trader: Trader):
         self.trader = trader
@@ -336,6 +395,8 @@ class TraderView:
         self.chart = None
         self.holdings_table = None
         self.transactions_table = None
+        self.real_summary = None
+        self.real_table = None
 
     def make_ui(self):
         is_cathie = self.trader.name == "Cathie"
@@ -365,6 +426,11 @@ class TraderView:
                         elem_id="options-cathie",
                     )
                 self.transactions_table = None
+                if self.trader.has_real_account():
+                    with gr.Row():
+                        self.real_summary = gr.HTML(self.trader.get_real_summary)
+                    with gr.Row():
+                        self.real_table = gr.HTML(self.trader.get_real_positions_html)
             else:
                 self.options_summary = None
                 with gr.Row():
@@ -398,6 +464,8 @@ class TraderView:
             refresh_outputs.append(self.options_summary)
         if self.transactions_table:
             refresh_outputs.append(self.transactions_table)
+        if self.real_table:
+            refresh_outputs += [self.real_summary, self.real_table]
         timer.tick(
             fn=self.refresh,
             inputs=[],
@@ -426,6 +494,8 @@ class TraderView:
             results.append(self.trader.get_options_summary())
         if self.transactions_table:
             results.append(self.trader.get_transactions_df())
+        if self.real_table:
+            results += [self.trader.get_real_summary(), self.trader.get_real_positions_html()]
         return tuple(results)
 
 

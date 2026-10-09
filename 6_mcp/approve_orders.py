@@ -4,6 +4,8 @@ Review and approve Cathie's staged REAL trades (CATHIE_EXECUTION_MODE=approve).
 
     uv run approve_orders.py           review each staged trade, approve or reject it
     uv run approve_orders.py --list    just show the real-trade ledger, change nothing
+    uv run approve_orders.py --exits   dry run: which open real positions meet an exit rule
+                                       now, and at what price they'd be closed (sends nothing)
 
 First it brings the ledger up to date with Schwab (fills, cancellations, orders
 left working 30+ minutes get cancelled). Then, for each trade Cathie staged, it
@@ -18,7 +20,9 @@ Schwab's preview -- and shows you the result:
 
 Prices are taken fresh at approval (the spread's current mid), not from when
 Cathie proposed it. Staged trades not approved by the end of their day expire.
-Exits aren't automated yet: close real positions yourself in thinkorswim.
+Exits are automatic (step 5): each trading cycle, code closes a real position at 75%+
+profit (at the mid), or at the natural price once the stock passes the short strike or
+it's 7 days from expiration. --exits shows what that check would do right now.
 """
 import argparse
 import sys
@@ -38,23 +42,29 @@ def _show_ledger(live_trading):
             extra = f"  filled {s.fill_credit:.2f}, premium ${s.net_premium:,.2f}, max loss ${s.max_loss:,.2f}"
         elif s.status == "pending":
             extra = f"  Schwab order {s.order_id}, limit {s.limit_credit:.2f}"
+        elif s.status == "closing":
+            extra = (f"  filled {s.fill_credit:.2f}; closing ({s.close_rule}) at {s.close_limit_debit:.2f} debit, "
+                     f"Schwab order {s.close_order_id}")
         print(f"  [{s.id}] {s.status.upper():<7} {s.label()}{extra}")
     # Today's trades that are already finished (not filled, rejected, expired), so the
     # outcome of an order sent earlier is visible here too.
     today = live_trading._now_et().date().isoformat()
     done = [s for s in ledger.spreads if s.status not in live_trading.ACTIVE_STATUSES
-            and (s.submitted_at or s.staged_at or "")[:10] == today]
+            and (s.closed_at or s.submitted_at or s.staged_at or "")[:10] == today]
     if done:
         print("Earlier today:")
         for s in done:
             last = s.events[-1] if s.events else ""
-            print(f"  [{s.id}] {s.status.upper():<10} {s.label()}" + (f"  ({last})" if last else ""))
+            pnl = f"  P&L ${s.realized_pnl:+,.2f}" if s.realized_pnl is not None else ""
+            print(f"  [{s.id}] {s.status.upper():<10} {s.label()}{pnl}" + (f"  ({last})" if last else ""))
     print()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Approve or reject Cathie's staged real trades.")
     parser.add_argument("--list", action="store_true", help="show the ledger only")
+    parser.add_argument("--exits", action="store_true",
+                        help="dry run of the automatic exit check; sends nothing")
     args = parser.parse_args()
 
     import live_trading
@@ -69,6 +79,15 @@ def main():
     except Exception as e:
         print(f"WARNING: couldn't update from Schwab: {e}")
     _show_ledger(live_trading)
+    if args.exits:
+        print("Exit check (dry run, nothing is sent):")
+        try:
+            lines = live_trading.check_exits(send=False)
+        except Exception as e:
+            lines = [f"couldn't run the exit check: {e}"]
+        for line in lines or ["no open real positions"]:
+            print(f"  {line}")
+        return
     if args.list:
         return
 

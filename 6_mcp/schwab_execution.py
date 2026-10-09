@@ -5,8 +5,9 @@ previews. Keep it that way, so "what can touch real money" stays one file.
 
 Step 3 of live trading (see CLAUDE.md, "Live trading on Schwab"): used by
 schwab_order_smoketest.py to place one deliberately unfillable order and cancel
-it. Cathie isn't wired to any of this yet; that's step 4, behind its own
-settings and the user's approval of each order.
+it. Since step 4, live_trading.py also sends Cathie's opening orders after the
+user approves each one, and (step 5) her closing orders automatically when an
+exit rule fires.
 
 Every call goes through the same client, token, account selection and rate
 limiter as the read-only modules.
@@ -94,10 +95,14 @@ def wait_for_status(order_id: int, wanted: set[str], timeout: float = 30.0, poll
         time.sleep(poll)
 
 
-def find_recent_order(leg_symbols: set[str], since_minutes: int = 10) -> dict | None:
+def find_recent_order(leg_symbols: set[str], since_minutes: int = 10,
+                      closing: bool | None = None, exclude_ids: set | None = None) -> dict | None:
     """The newest order from the last few minutes whose legs are exactly
     `leg_symbols`. Fallback for when place_order() couldn't read the new order's ID,
-    so an order we just sent can still be found and cancelled."""
+    so an order we just sent can still be found and cancelled. `closing=True` only
+    matches closing orders (every leg ..._TO_CLOSE), False only opening ones: a
+    spread's open and close orders have the same legs. `exclude_ids`: orders already
+    accounted for (e.g. an earlier close of the same strikes), never returned."""
     import datetime as dt
 
     client = _get_client()
@@ -114,9 +119,14 @@ def find_recent_order(leg_symbols: set[str], since_minutes: int = 10) -> dict | 
             raise SchwabAccountError(f"couldn't list recent orders (HTTP {resp.status_code})")
         return resp.json() or []
 
+    def _is_close(o):
+        return all((leg.get("instruction") or "").endswith("_TO_CLOSE") for leg in o.get("orderLegCollection") or [])
+
     matches = [
         o for o in _rate_limited_call(_call)
         if {(leg.get("instrument") or {}).get("symbol") for leg in o.get("orderLegCollection") or []} == leg_symbols
+        and (closing is None or _is_close(o) == closing)
+        and o.get("orderId") not in (exclude_ids or set())
     ]
     matches.sort(key=lambda o: o.get("enteredTime") or "", reverse=True)
     return mask_account_fields(matches[0]) if matches else None
