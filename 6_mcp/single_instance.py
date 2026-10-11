@@ -33,15 +33,18 @@ class AlreadyRunningError(RuntimeError):
     """Another trading_floor.py process already holds the single-instance lock."""
 
 
-def acquire_single_instance_lock():
+def acquire_single_instance_lock(program: str = "trading_floor.py"):
     """Acquire the lock, or raise AlreadyRunningError if another process
     already holds it. Call this once, as early as possible in the process
     (before anything touches accounts.db or schwab_token.json). The lock is
-    released automatically when this process exits, however it exits."""
+    released automatically when this process exits, however it exits.
+    `program` picks a separate lock per script (e.g. breach_watch.py)."""
     global _lock_file
 
-    _lock_file = open(_LOCK_PATH, "a+")
-    if os.path.getsize(_LOCK_PATH) == 0:
+    lock_path = _LOCK_PATH if program == "trading_floor.py" else os.path.join(
+        os.path.dirname(_LOCK_PATH), f".{os.path.splitext(program)[0]}.lock")
+    _lock_file = open(lock_path, "a+")
+    if os.path.getsize(lock_path) == 0:
         # msvcrt.locking needs at least one byte to lock a region over.
         _lock_file.write("0")
         _lock_file.flush()
@@ -58,8 +61,8 @@ def acquire_single_instance_lock():
         _lock_file.close()
         _lock_file = None
         raise AlreadyRunningError(
-            f"Another trading_floor.py process already appears to be running "
-            f"(lock held on {_LOCK_PATH}). Two instances running at once will race "
+            f"Another {program} process already appears to be running "
+            f"(lock held on {lock_path}). Two instances running at once will race "
             "on the same Schwab token file and drive Cathie's account state "
             "concurrently -- find and stop the other one first (on Windows: "
             "`Get-CimInstance Win32_Process -Filter \"Name = 'python.exe'\" | "

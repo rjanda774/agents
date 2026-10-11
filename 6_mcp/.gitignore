@@ -14,3 +14,5 @@ tradealgo_discovery.json
 watchlist.txt
 .schwab_preview_last.json
 STOP_TRADING
+.breach_alerts.json
+.breach_watch.lock
