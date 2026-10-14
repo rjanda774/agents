@@ -1,0 +1,17 @@
+# TEMPLATE -- copy this to hands_off.txt and edit that copy:
+#     Copy-Item hands_off.example.txt hands_off.txt
+# hands_off.txt is gitignored, so your edits never show up as git changes.
+#
+# Hands-off list: Cathie's code never closes a real position on these tickers
+# automatically -- not at 75% profit, not on a breach, not at 7 days to expiration.
+# You close them yourself in thinkorswim. Applies to Cathie's spreads and (with
+# AUTO_CLOSE_MANUAL_AT_PROFIT=true) to your own. Everything else keeps working,
+# unlike the STOP_TRADING file, which stops everything.
+#
+# Read fresh every cycle: an edit takes effect on the next check, no restart.
+# When one of these hits an exit rule you get one Pushover message a day saying
+# so, and breach_watch.py's alerts say it's on this list.
+#
+# Format: one ticker per line, '#' starts a comment, blank lines are ignored.
+#
+# CRDO

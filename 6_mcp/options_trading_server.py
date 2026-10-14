@@ -6,13 +6,12 @@ otherwise or on any Schwab failure -- every response that touches live chain
 data carries a "data_source" field ("schwab" / "yfinance" / "yfinance (schwab
 fallback)") so it's always visible which one actually supplied the numbers.
 Uses OptionLab for credit spread P/L analysis and probability-of-profit.
-With CATHIE_EXECUTION_MODE unset or "simulated" (the default), trades are fully
-simulated: sell_credit_spread/close_credit_spread only write to the local
-`cathie_options` pseudo-account (accounts.db/options_models.py). With "approve",
-sell_credit_spread stages a REAL trade for the user's approval instead
-(live_trading.py); nothing here ever sends an order itself -- only the user's
-approve_orders.py does, via schwab_execution.py. See CLAUDE.md, "Live trading
-on Schwab".
+Real money only (since 2026-10-14; paper trading was removed): with
+CATHIE_EXECUTION_MODE=approve, sell_credit_spread stages a REAL trade for the
+user's approval (live_trading.py), and only on Schwab-priced data; in any other
+mode it trades nothing. Nothing here ever sends an order itself -- only the
+user's approve_orders.py does, via schwab_execution.py, and live_trading's
+automatic closes. See CLAUDE.md, "Live trading on Schwab".
 Completely separate from stock trading system
 """
 from mcp.server.fastmcp import FastMCP  # type: ignore
@@ -100,20 +99,6 @@ def _finite_or(v, default=None):
     except (TypeError, ValueError):
         return default
     return f if math.isfinite(f) else default
-
-
-def _regular_session_open(now: datetime | None = None) -> tuple[bool, str]:
-    """(is the US stock market in its regular session right now, current time in ET).
-
-    Regular session = Monday-Friday, 9:30-16:00 America/New_York. Clock-based only, so
-    it doesn't know about exchange holidays or early closes -- a holiday weekday counts
-    as open here."""
-    from zoneinfo import ZoneInfo
-
-    et = ZoneInfo("America/New_York")
-    now_et = (now or datetime.now(et)).astimezone(et)
-    is_open = now_et.weekday() < 5 and dt_mod.time(9, 30) <= now_et.time() < dt_mod.time(16, 0)
-    return is_open, now_et.strftime("%a %Y-%m-%d %H:%M ET")
 
 
 def _yfinance_data_source_label() -> str:
@@ -946,9 +931,8 @@ async def sell_credit_spread(
     contracts: int,
     rationale: str
 ) -> str:
-    """ACTUALLY SELL a credit spread - records the position in options account.
-    
-    This is REAL position tracking for credit spreads, separate from stock holdings.
+    """Propose a REAL credit spread on the user's Schwab account: if every rule passes,
+    it's STAGED for the user's approval (never sent by this tool, never a paper trade).
     
     Args:
         name: Account holder name
@@ -961,13 +945,18 @@ async def sell_credit_spread(
         rationale: Trading rationale
     
     Returns:
-        Confirmation with position details and updated account status
+        "status": "STAGED FOR APPROVAL" with the trade's details, or an "error"
     """
     try:
-        from options_models import CreditSpread, OptionLeg, OptionsAccount
-        from database import read_account, write_account, write_log
-        import uuid
         import datetime as dt_mod
+        import live_trading
+
+        # REAL MONEY ONLY (2026-10-14, the user's call): paper trading was removed. A trade
+        # is staged for the user's approval on the Schwab account, or not made at all.
+        mode = live_trading.execution_mode()
+        if mode != "approve":
+            return json.dumps({"error": f"NOTHING TRADED: real trading is off (CATHIE_EXECUTION_MODE={mode!r}) "
+                                        "and paper trading was removed. Don't retry this cycle."})
 
         # HARD ENFORCEMENT: expiration must be 25-45 calendar days from today
         today = dt_mod.date.today()
@@ -1051,13 +1040,6 @@ async def sell_credit_spread(
                         "post-earnings check wasn't applied.")
                 earnings_warning = f"{earnings_warning} {note}" if earnings_warning else note
 
-        # Load or create options account
-        options_data = read_account(f"{name.lower()}_options")
-        if not options_data:
-            options_account = OptionsAccount(name=name.lower())
-        else:
-            options_account = OptionsAccount(**options_data)
-        
         # Get analysis first
         analysis_json = await analyze_credit_spread(
             symbol, spread_type, short_strike, long_strike, 
@@ -1067,6 +1049,13 @@ async def sell_credit_spread(
         
         if "error" in analysis:
             return json.dumps(analysis)
+
+        # No Schwab, no trade: every number a real order is based on must come from Schwab,
+        # never the yfinance fallback.
+        if analysis.get("data_source") != "schwab":
+            return json.dumps({"error": f"TRADE REJECTED: this spread was priced from {analysis.get('data_source')!r}, "
+                                        "not Schwab, and Cathie only trades on Schwab's own data. "
+                                        "Nothing was staged."})
 
         # HARD ENFORCEMENT (trade_rules.py): individual stocks must trade at $100+; the
         # named ETF universe is exempt. Was prompt-only guidance before 2026-10-08.
@@ -1135,137 +1124,26 @@ async def sell_credit_spread(
                 )
             })
 
-        # REAL TRADING (CLAUDE.md, "Live trading on Schwab", step 4). In approve mode the
-        # trade is staged in the cathie_live ledger for the user to approve by hand
-        # (approve_orders.py) instead of opened on paper. The paper-cash risk cap below
-        # doesn't apply to real money: live_trading checks max loss against the real
-        # account's Funds Available and Day Net Liq, now and again at approval.
-        import live_trading
-        mode = live_trading.execution_mode()
-        if mode != "simulated":
-            if mode != "approve":
-                return json.dumps({"error": f"CATHIE_EXECUTION_MODE={mode!r} isn't supported "
-                                            "(use 'simulated' or 'approve'). Nothing was traded."})
-            if earnings_warning:
-                # Paper trades fail open on unknown earnings; real money fails closed.
-                missing = " and ".join(
-                    part for part, unknown in (("next earnings date", next_earnings is None),
-                                               ("last report date", last_earnings is None)) if unknown
-                )
-                return json.dumps({"error": f"TRADE REJECTED: {symbol}'s {missing} can't be verified "
-                                            "right now, and real trades require both. Pick a different "
-                                            "underlying."})
-            staged = live_trading.stage(
-                symbol, spread_type, short_strike, long_strike, expiration_date, contracts,
-                net_premium / (100 * contracts), max_loss, rationale,
-            )
-            if analysis.get("data_source"):
-                staged["data_source"] = analysis["data_source"]
-            return json.dumps(staged, indent=2)
-
-        # HARD ENFORCEMENT: never risk more than 8% of available cash on a single trade,
-        # AND never risk more than 5x the premium actually collected for that trade --
-        # both must hold, so the effective cap is whichever of the two is smaller. Raised
-        # from a flat 3%-of-cash cap (no premium-ratio check existed before) after low
-        # trade frequency suggested 3% was too tight to clear on a $10k account for most
-        # otherwise-valid setups; the added 5x-premium check keeps a thin-premium trade
-        # from using the full 8% anyway, since a bigger cash cushion alone doesn't make a
-        # weak risk/reward trade sound. Checked against current cash, not
-        # cash-after-this-trade's-premium -- what you'd actually have to cover the max
-        # loss from is what you have going in.
-        MAX_RISK_PCT = 0.08
-        MAX_RISK_TO_PREMIUM_RATIO = 5.0
-        max_allowed_risk_pct = options_account.cash * MAX_RISK_PCT
-        max_allowed_risk_premium = net_premium * MAX_RISK_TO_PREMIUM_RATIO
-        max_allowed_risk = min(max_allowed_risk_pct, max_allowed_risk_premium)
-        if max_loss > max_allowed_risk:
-            limiting_rule = (
-                f"the {MAX_RISK_PCT * 100:.0f}%-of-cash cap "
-                f"({(max_loss / options_account.cash * 100) if options_account.cash else float('inf'):.1f}% "
-                f"of ${options_account.cash:.2f} available)"
-                if max_allowed_risk_pct <= max_allowed_risk_premium
-                else f"the {MAX_RISK_TO_PREMIUM_RATIO:.0f}x-net-premium cap "
-                     f"(net premium collected is only ${net_premium:.2f})"
-            )
-            return json.dumps({
-                "error": (
-                    f"TRADE REJECTED: max loss ${max_loss:.2f} exceeds {limiting_rule}. "
-                    f"Max allowed risk right now is ${max_allowed_risk:.2f}. Reduce `contracts`, "
-                    f"pick a narrower spread width, or choose strikes closer together to lower max loss."
-                )
-            })
-
-        # Create option legs
-        option_type = "put" if spread_type == "bull_put" else "call"
-        
-        short_leg = OptionLeg(
-            symbol=symbol,
-            strike=short_strike,
-            option_type=option_type,
-            action="sell",
-            contracts=contracts,
-            premium_per_contract=short_premium_per
-        )
-
-        long_leg = OptionLeg(
-            symbol=symbol,
-            strike=long_strike,
-            option_type=option_type,
-            action="buy",
-            contracts=contracts,
-            premium_per_contract=long_premium_per
-        )
-        
-        # Create credit spread position
-        position_id = str(uuid.uuid4())[:8]
-        spread = CreditSpread(
-            position_id=position_id,
-            symbol=symbol,
-            spread_type=spread_type,
-            short_leg=short_leg,
-            long_leg=long_leg,
-            expiration_date=expiration_date,
-            opened_at=datetime.now().isoformat(),
-            net_premium_collected=net_premium,
-            max_loss=max_loss,
-            status="open",
-            rationale=rationale
-        )
-        
-        # Add to account
-        options_account.open_spread(spread)
-        
-        # Save to database
-        write_account(f"{name.lower()}_options", options_account.model_dump())
-        write_log(name, "account", f"Opened {spread_type} on {symbol} | strikes {short_strike}/{long_strike} | exp {expiration_date} | {contracts} contracts | premium ${net_premium:.2f} | max loss ${max_loss:.2f}")
-
-        result = {
-            "status": "POSITION OPENED",
-            "position_id": position_id,
-            "spread": {
-                "type": spread_type,
-                "symbol": symbol,
-                "short_strike": short_strike,
-                "long_strike": long_strike,
-                "expiration": expiration_date,
-                "contracts": contracts
-            },
-            "financials": {
-                "premium_collected": f"${net_premium:.2f}",
-                "max_risk": f"${max_loss:.2f}",
-                "max_profit": f"${net_premium:.2f}"
-            },
-            "account_summary": options_account.summary(),
-            "message": f"Successfully opened {contracts} {spread_type} spread(s) on {symbol}",
-            "data_source": analysis.get("data_source"),
-        }
+        # REAL TRADING (CLAUDE.md, "Live trading on Schwab", step 4): the trade is staged in
+        # the cathie_live ledger for the user to approve by hand (approve_orders.py). Max loss
+        # is checked against the real account's Funds Available and Day Net Liq, now and
+        # again at approval.
         if earnings_warning:
-            result["earnings_check_warning"] = earnings_warning
-        if analysis.get("source_note"):
-            result["source_note"] = analysis["source_note"]
+            # Real money fails closed on unknown earnings.
+            missing = " and ".join(
+                part for part, unknown in (("next earnings date", next_earnings is None),
+                                           ("last report date", last_earnings is None)) if unknown
+            )
+            return json.dumps({"error": f"TRADE REJECTED: {symbol}'s {missing} can't be verified "
+                                        "right now, and real trades require both. Pick a different "
+                                        "underlying."})
+        staged = live_trading.stage(
+            symbol, spread_type, short_strike, long_strike, expiration_date, contracts,
+            net_premium / (100 * contracts), max_loss, rationale,
+        )
+        staged["data_source"] = analysis["data_source"]
+        return json.dumps(staged, indent=2)
 
-        return json.dumps(result, indent=2)
-        
     except Exception as e:
         import traceback
         return json.dumps({"error": str(e), "traceback": traceback.format_exc()})
@@ -1273,293 +1151,30 @@ async def sell_credit_spread(
 
 
 @mcp.tool()
-async def close_credit_spread(
-    name: str,
-    position_id: str,
-    reason: str
-) -> str:
-    """Close (buy back) an existing credit spread position.
-
-    HARD ENFORCEMENT: this only succeeds if one of these is actually true, verified here
-    server-side against live data -- not just whatever `reason` you pass:
-    - The position has captured 75%+ of max profit (closing cost <= 25% of original premium)
-    - The underlying has breached the short strike (moving against the position)
-    - 7 or fewer days remain to expiration (avoid pin risk / assignment risk)
-    If none of those hold, the call is rejected and the position stays open. Don't call this
-    just because you feel like reconsidering a position -- only when one of the three
-    conditions above is genuinely met.
-
-    To close: buy back the short leg and sell back the long leg.
-    The closing cost is fetched live from the market.
-
-    Args:
-        name: Account holder name
-        position_id: The position_id from get_options_positions
-        reason: Why you are closing (profit target hit / loss management / near expiry)
-
-    Returns:
-        Confirmation with P&L realized
+async def close_credit_spread(name: str, position_id: str, reason: str) -> str:
+    """Not available: real positions are closed automatically by code when an exit rule
+    fires (75% profit, breach, 7 DTE). Kept only so an old strategy text that still
+    names this tool gets a clear answer instead of a missing-tool error.
     """
-    try:
-        from options_models import OptionsAccount
-        from database import read_account, write_account, write_log
-
-        # Real Schwab trades (approve mode) are closed by code, not here -- live_trading.check_exits.
-        import live_trading
-        real = live_trading.load_ledger().get(position_id) if live_trading.execution_mode() != "simulated" else None
-        if real is not None:
-            return json.dumps({"error": (
-                f"{position_id} is a REAL Schwab trade ({real.label()}, status {real.status}). "
-                "Real positions are closed automatically by code when an exit rule fires (75% "
-                "profit, breach, 7 DTE), not by this tool. Nothing was closed. If you think it "
-                "should be closed for another reason, say so in your summary."
-            )})
-
-        options_data = read_account(f"{name.lower()}_options")
-        if not options_data:
-            return json.dumps({"error": "No options account found"})
-
-        options_account = OptionsAccount(**options_data)
-
-        # Find the position
-        position = next((p for p in options_account.open_positions if p.position_id == position_id), None)
-        if not position:
-            return json.dumps({"error": f"Position {position_id} not found in open positions"})
-
-        # Guard: cannot close a position that has already expired
-        today = dt_mod.date.today()
-        try:
-            exp_date = dt_mod.date.fromisoformat(position.expiration_date)
-            if exp_date < today:
-                return json.dumps({
-                    "error": (
-                        f"Cannot close position {position_id} — it expired on {position.expiration_date}. "
-                        f"In the real world, expired options cannot be traded. "
-                        f"If it expired out-of-the-money, the premium is already yours and no action is needed. "
-                        f"If it expired in-the-money, assignment would have already occurred. "
-                        f"Do not attempt to close expired positions."
-                    )
-                })
-        except ValueError:
-            pass  # If date parse fails, let it proceed
-
-        # Fetch current market prices AND the underlying's current price together --
-        # need both to verify whether a close is actually justified, not just take the
-        # LLM's word for it via `reason`. Real Schwab data when configured, falling
-        # back to yfinance automatically (or on any Schwab failure) -- same source
-        # priority as get_options_chain/analyze_credit_spread.
-        market_data_available = False
-        current_price = None
-        closing_cost = None
-        try:
-            chain = _fetch_chain(position.symbol, position.expiration_date)
-            current_price = chain["current_price"]
-            rows = chain["puts"] if position.spread_type == "bull_put" else chain["calls"]
-
-            short_row = min(rows, key=lambda r: abs(r["strike"] - position.short_leg.strike))
-            long_row  = min(rows, key=lambda r: abs(r["strike"] - position.long_leg.strike))
-
-            short_bid_q, short_ask_q = short_row["bid"], short_row["ask"]
-            long_bid_q,  long_ask_q  = long_row["bid"],  long_row["ask"]
-
-            # Guard: a 0/0 bid-ask on a leg is not a real quote, it's the data source's way
-            # of saying no market maker has an active price right now -- routinely true
-            # outside regular trading hours, or for a thin/deep-OTM strike, not proof the
-            # option is worth nothing. Trusting it as-is silently turned "no live data"
-            # into a fabricated $0.00 closing cost, which trivially satisfies the
-            # 75%-captured profit rule below and force-closes a position that was never
-            # actually verified against a real price. Require at least one nonzero side
-            # on each leg before treating this as a usable quote; otherwise fall through
-            # to the existing (correct) "no market data" handling below, which assumes
-            # breakeven rather than fabricating a gain.
-            # Also require every quote (and the underlying price used for the breach check) to
-            # be finite: NaN on one side would otherwise pass the "> 0" check via the other
-            # side and produce a NaN closing_cost -- and a NaN P&L written to the ledger if
-            # the breach or expiry trigger then fired.
-            quotes_finite = all(
-                math.isfinite(_finite_or(v, float("nan")))
-                for v in (short_bid_q, short_ask_q, long_bid_q, long_ask_q, current_price)
-            )
-            if quotes_finite and (short_bid_q > 0 or short_ask_q > 0) and (long_bid_q > 0 or long_ask_q > 0):
-                # Cost to close = buy back short + sell back long
-                short_ask = (short_bid_q + short_ask_q) / 2
-                long_bid  = (long_bid_q  + long_ask_q)  / 2
-                closing_cost = (short_ask - long_bid) * 100 * position.short_leg.contracts
-                price_source = f"live market ({chain['data_source']})"
-                market_data_available = True
-        except Exception:
-            pass  # handled below -- no fabricated "estimate", we just don't have data
-
-        # HARD ENFORCEMENT: verify a real closing rule actually applies, server-side.
-        # We've seen positions get closed within minutes of opening them for no valid
-        # reason -- don't just trust `reason`, check the actual numbers.
-        days_to_exp = (dt_mod.date.fromisoformat(position.expiration_date) - today).days
-        expiry_trigger = days_to_exp <= 7  # computable without any market data
-
-        breach_trigger = False
-        profit_trigger = False
-        if market_data_available:
-            if position.spread_type == "bull_put":
-                breach_trigger = current_price <= position.short_leg.strike
-            else:
-                breach_trigger = current_price >= position.short_leg.strike
-            if position.net_premium_collected:
-                profit_trigger = closing_cost <= 0.25 * position.net_premium_collected
-
-        # HARD ENFORCEMENT: breach and profit exits act on prices, so only during the
-        # regular session. Overnight/pre/after-market underlying prints are thin, and
-        # option quotes don't update at all outside regular hours, so they're stale.
-        # Observed live: ORCL dipped to $133 overnight, below a $135 short put, and this
-        # tool closed the spread at 00:52 ET for a -$185 loss; ORCL was back at ~$138
-        # by the next day. The 7-day rule depends only on the date, so it still applies
-        # at any hour.
-        session_open, market_time = _regular_session_open()
-        held_until_open = []
-        if not session_open:
-            if breach_trigger:
-                held_until_open.append("short strike breached")
-            if profit_trigger:
-                held_until_open.append("profit target")
-            breach_trigger = profit_trigger = False
-
-        if not (expiry_trigger or breach_trigger or profit_trigger):
-            detail = (
-                f"current price ${current_price:.2f} vs short strike {position.short_leg.strike} "
-                f"(not breached); closing cost ${closing_cost:.2f} is "
-                f"{(closing_cost / position.net_premium_collected * 100) if position.net_premium_collected else 0:.1f}% "
-                f"of original premium ${position.net_premium_collected:.2f} (need <=25% to take profit)."
-                if market_data_available else
-                "live market data was unavailable to check the breach/profit conditions."
-            )
-            hours_note = ""
-            if not session_open:
-                hours_note = (
-                    f" It's {market_time}, outside regular market hours (Mon-Fri 9:30-16:00 ET): "
-                    "breach and profit exits are only acted on during regular hours, when prices "
-                    "and option quotes are live."
-                )
-                if held_until_open:
-                    hours_note += (
-                        f" At these off-hours prices, {' and '.join(held_until_open)} would apply "
-                        "-- re-check during market hours."
-                    )
-            return json.dumps({
-                "error": (
-                    f"CLOSE REJECTED: no exit rule applies to position {position_id} yet. "
-                    f"Days to expiration: {days_to_exp} (need <=7 to force-close). {detail}"
-                    f"{hours_note} Leave this position open."
-                )
-            })
-
-        if not market_data_available:
-            # Only reachable via expiry_trigger (the only rule verifiable without market
-            # data). Don't fabricate a profit estimate -- assume breakeven (pay back the
-            # full original premium) rather than silently reporting a fake gain.
-            closing_cost = position.net_premium_collected
-            price_source = "ESTIMATED (market data unavailable) -- assumed breakeven, forced close at DTE<=7"
-
-        # Which rule(s) actually justified this close, as verified above -- recorded in
-        # the ledger, the log and the response, because the model's own `reason` can't be
-        # trusted (ORCL 2026-09-29 was logged as "DTE <= 7 days" with 17 days left; it
-        # was really a breach close).
-        rules = []
-        if expiry_trigger:
-            rules.append(f"7 or fewer days to expiration ({days_to_exp} left)")
-        if breach_trigger:
-            op, leg = ("<=", "put") if position.spread_type == "bull_put" else (">=", "call")
-            rules.append(
-                f"short strike breached ({position.symbol} ${current_price:.2f} {op} "
-                f"{position.short_leg.strike} short {leg})"
-            )
-        if profit_trigger:
-            rules.append(
-                f"profit target (closing cost ${closing_cost:.2f} <= 25% of "
-                f"${position.net_premium_collected:.2f} premium)"
-            )
-        close_rule = "; ".join(rules)
-        underlying_price = round(float(current_price), 2) if market_data_available else None
-
-        # Close the position
-        closed = options_account.close_spread(position_id, closing_cost)
-        if not closed:
-            return json.dumps({"error": f"Failed to close position {position_id}"})
-        closed.close_rule = close_rule
-        closed.underlying_price_at_close = underlying_price
-
-        write_account(f"{name.lower()}_options", options_account.model_dump())
-
-        pnl = closed.profit_loss()
-        pct_captured = (pnl / position.net_premium_collected * 100) if position.net_premium_collected else 0
-        price_text = f"${underlying_price:.2f}" if underlying_price is not None else "unavailable"
-        write_log(
-            name, "account",
-            f"Closed {position.spread_type} on {position.symbol} | P&L ${pnl:.2f} "
-            f"({pct_captured:.1f}% captured) | rule: {close_rule} | {position.symbol} price "
-            f"{price_text} at {market_time} ({price_source}) | model's stated reason: {reason}"
-        )
-
-        return json.dumps({
-            "status": "POSITION CLOSED",
-            "position_id": position_id,
-            "symbol": position.symbol,
-            "spread_type": position.spread_type,
-            "original_premium": f"${position.net_premium_collected:.2f}",
-            "closing_cost": f"${closing_cost:.2f}",
-            "realized_pnl": f"${pnl:.2f}",
-            "pct_premium_captured": f"{pct_captured:.1f}%",
-            "price_source": price_source,
-            "close_rule": close_rule,
-            "underlying_price": underlying_price,
-            "checked_at": market_time,
-            "reason": reason,
-            "note": (
-                "close_rule is the exit rule the server actually verified; when you report "
-                "this close, give close_rule as the reason, not your own `reason` text."
-            ),
-            "account_summary": options_account.summary()
-        }, indent=2)
-
-    except Exception as e:
-        import traceback
-        return json.dumps({"error": str(e), "traceback": traceback.format_exc()})
+    return json.dumps({"error": "Nothing was closed. You can't close positions: code closes real "
+                                "positions automatically when an exit rule fires (75% profit, "
+                                "short strike breached, 7 DTE). Paper trading was removed."})
 
 
 @mcp.tool()
 async def get_options_positions(name: str) -> str:
-    """Get all open and closed options positions.
-    
+    """Your REAL trades on the user's Schwab account (staged, pending, open, closing,
+    and recently finished), plus today's order count. Paper trading was removed.
+
     Args:
-        name: Account holder name
-    
+        name: Account holder name (Cathie)
+
     Returns:
-        JSON with all positions and account summary
+        JSON with your real trades
     """
     try:
-        from options_models import OptionsAccount
-        from database import read_account
-        
-        options_data = read_account(f"{name.lower()}_options")
-        if not options_data:
-            result = {
-                "message": "No paper options positions yet",
-                "open_positions": [],
-                "closed_positions": []
-            }
-        else:
-            options_account = OptionsAccount(**options_data)
-            result = {
-                "account_summary": options_account.summary(),
-                "open_positions": [pos.model_dump() for pos in options_account.open_positions],
-                "closed_positions": [pos.model_dump() for pos in options_account.closed_positions]
-            }
-        # Real trades (approve mode) live in their own ledger; show them alongside, clearly
-        # labelled, so Cathie doesn't re-propose a staged spread or forget a real one.
         import live_trading
-        if live_trading.execution_mode() != "simulated":
-            result["real_schwab_trades"] = live_trading.ledger_summary()
-        
-        return json.dumps(result, indent=2, default=str)
-        
+        return json.dumps({"real_schwab_trades": live_trading.ledger_summary()}, indent=2, default=str)
     except Exception as e:
         return json.dumps({"error": str(e)})
 

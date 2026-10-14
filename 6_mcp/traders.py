@@ -1,7 +1,7 @@
 from contextlib import AsyncExitStack
 from accounts_client import read_accounts_resource, read_strategy_resource
 from accounts import Account
-from database import read_account, write_log
+from database import write_log
 from tracers import make_trace_id
 from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
 from openai import AsyncOpenAI
@@ -9,14 +9,13 @@ from dotenv import load_dotenv
 import asyncio
 import os
 import json
-from datetime import date, datetime
+from datetime import datetime
 from agents.mcp import MCPServerStdio
 from templates import (
     researcher_instructions,
     trader_instructions,
     trade_message,
     rebalance_message,
-    close_positions_message,
     new_trades_message,
     research_tool,
 )
@@ -36,23 +35,10 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 MAX_TURNS = 30
 
-# Cathie's cycle runs as two separate Runner.run passes instead of one (see
-# run_agent_two_pass) -- a single combined "close positions, then find new trades" call was
-# routinely hitting a shared MAX_TURNS budget partway through (her workflow got substantially
-# heavier than the original single-symbol template this constant was tuned for: per-candidate
-# evaluation now needs ~4-6 tool calls each, across 3-5 candidates, on top of position review).
-# Splitting means each half gets its own budget, and one running long doesn't cost the other
-# its progress. Position review is the lighter half (bounded by how many open positions
-# exist); new-trade search is the heavier half (bounded by how many candidates get evaluated).
-# Bumped 45 -> 55: templates.py made get_stock_screener (once/cycle, any query) and
-# get_market_regime (once per candidate) mandatory rather than optional, adding ~2 turns each
-# on top of the original per-candidate budget.
-# Bumped again 55 -> 90: get_stock_screener is now mandatory ONCE PER SCREEN (all six queries,
-# not just one), adding ~10-12 turns on its own before any candidate evaluation even starts.
-# Expect the new-trade pass to run noticeably slower and use more tokens per cycle as a direct
-# result -- that's the accepted tradeoff for actually covering all six screens instead of
-# whichever one the model happened to reach for.
-CLOSE_PASS_MAX_TURNS = 20
+# Cathie's new-trade pass gets its own, larger turn budget (see run_options_cycle): per-
+# candidate evaluation needs ~4-6 tool calls each, plus the mandatory dark-pool and regime
+# calls. It used to be pass 2 of two; the paper position-review pass 1 was removed on
+# 2026-10-14 with paper trading (real positions are closed by code, live_trading.check_exits).
 TRADE_PASS_MAX_TURNS = 90
 
 openrouter_client = AsyncOpenAI(base_url=OPENROUTER_BASE_URL, api_key=openrouter_api_key)
@@ -110,68 +96,18 @@ class Trader:
 
     async def get_account_report(self, accounts_server=None) -> str:
         if self.name in TRADERS_WITH_OPTIONS_TOOL:
-            summary = self._get_options_account_summary()
+            # Real money only (paper trading removed 2026-10-14): her account is the live
+            # Schwab balances plus her real trades.
             import live_trading
-            if live_trading.execution_mode() == "approve":
-                # Real money: show the live Schwab balances, and label the paper account's
-                # cash as simulated, so her summaries don't report paper cash as her balance.
-                data = json.loads(summary)
-                data["paper_cash_simulated"] = data.pop("cash", None)
-                try:
-                    data["real_schwab_account"] = await asyncio.to_thread(live_trading.real_account_snapshot)
-                except Exception as e:
-                    data["real_schwab_account"] = {"error": f"couldn't read the real account: {e}"}
-                summary = json.dumps(data)
-            return summary
+            try:
+                data = {"real_schwab_account": await asyncio.to_thread(live_trading.real_account_snapshot)}
+            except Exception as e:
+                data = {"real_schwab_account": {"error": f"couldn't read the real account: {e}"}}
+            return json.dumps(data)
         account = await read_accounts_resource(self.name, accounts_server)
         account_json = json.loads(account)
         account_json.pop("portfolio_value_time_series", None)
         return json.dumps(account_json)
-
-    def _get_options_account_summary(self) -> str:
-        """Compact options-account summary (open positions, no closed-position/rationale bloat)."""
-        data = read_account(f"{self.name.lower()}_options")
-        if not data:
-            return json.dumps(
-                {"cash": 10_000, "open_positions": [], "closed_positions": [], "total_premium_collected": 0}
-            )
-
-        today = date.today().isoformat()
-        open_positions = [p for p in data.get("open_positions", []) if p.get("expiration_date", "9999") >= today]
-        closed_positions = data.get("closed_positions", [])
-
-        compact_open = [
-            {
-                "id": p.get("position_id", "")[:8],
-                "sym": p.get("symbol"),
-                "type": p.get("spread_type"),
-                "short": p.get("short_leg", {}).get("strike"),
-                "long": p.get("long_leg", {}).get("strike"),
-                "exp": p.get("expiration_date"),
-                "contracts": p.get("short_leg", {}).get("contracts"),
-                "premium": round(p.get("net_premium_collected", 0), 2),
-                "max_loss": round(p.get("max_loss", 0), 2),
-                "dte": (date.fromisoformat(p["expiration_date"]) - date.today()).days
-                if p.get("expiration_date")
-                else None,
-            }
-            for p in open_positions
-        ]
-        total_realized = sum(p.get("realized_pnl", 0) or 0 for p in closed_positions)
-        total_collected = sum(
-            p.get("net_premium_collected", 0) or 0 for p in data.get("open_positions", []) + closed_positions
-        )
-
-        return json.dumps(
-            {
-                "cash": round(data.get("cash", 10_000), 2),
-                "total_premium_collected": round(total_collected, 2),
-                "total_realized_pnl": round(total_realized, 2),
-                "open_positions_count": len(compact_open),
-                "closed_positions_count": len(closed_positions),
-                "open_positions": compact_open,
-            }
-        )
 
     async def run_agent(self, trader_mcp_servers, researcher_mcp_servers):
         self.agent = await self.create_agent(trader_mcp_servers, researcher_mcp_servers)
@@ -182,7 +118,7 @@ class Trader:
         # per call -- see the comment atop accounts_client.py for why that mattered.
         accounts_server = next((s for s in trader_mcp_servers if s.name == "accounts_server.py"), None)
         if self.name in TRADERS_WITH_OPTIONS_TOOL:
-            await self.run_agent_two_pass(accounts_server)
+            await self.run_options_cycle(accounts_server)
             return
         account = await self.get_account_report(accounts_server)
         strategy = await read_strategy_resource(self.name, accounts_server)
@@ -193,25 +129,24 @@ class Trader:
         )
         await Runner.run(self.agent, message, max_turns=MAX_TURNS)
 
-    async def run_agent_two_pass(self, accounts_server=None):
-        """Options traders (currently just Cathie) run their cycle as two independent
-        Runner.run passes on the same agent: close_positions_message first, then
-        new_trades_message. See CLOSE_PASS_MAX_TURNS/TRADE_PASS_MAX_TURNS above for why.
+    async def run_options_cycle(self, accounts_server=None):
+        """Options traders (currently just Cathie). Code first: update the real-trade
+        ledger from Schwab and close any real position that meets an exit rule. Then, only
+        if a new real trade is possible right now (approve mode, Schwab readable, limits
+        not used up), the spread scan and one new-trade Runner.run pass.
 
-        Only pass 1 gets its own try/except -- if it errors or runs out of turns, pass 2
-        still runs (with a placeholder note in place of pass 1's summary), so a slow/stuck
-        position review doesn't also cost the new-trade search. Pass 2's own exceptions are
-        left to propagate to run()'s existing catch-all, same as the single-pass path.
+        Real money only since 2026-10-14: the paper position-review pass and paper trades
+        were removed at the user's request. Without Schwab she doesn't trade at all.
         """
-        # Real trades (approve mode): update the cathie_live ledger from Schwab before
-        # Cathie looks at anything -- record fills at their real price, cancel orders
-        # working 30+ minutes, expire unapproved stagings. Code, not the model, does this.
-        # Best effort: a Schwab hiccup must never cost the cycle.
         import live_trading
+        code_notes = []
         if live_trading.execution_mode() != "simulated":
+            # Record fills at their real price, cancel orders working 30+ minutes, expire
+            # unapproved stagings. Best effort: a Schwab hiccup must never cost the cycle.
             try:
                 for msg in await asyncio.to_thread(live_trading.reconcile):
                     print(f"{self.name} live: {msg}")
+                    code_notes.append(msg)
             except Exception as e:
                 print(f"{self.name}: live-trade reconcile failed: {e}")
             # Exits on real positions (step 5): code checks the rules and sends the close
@@ -219,33 +154,24 @@ class Trader:
             try:
                 for msg in await asyncio.to_thread(live_trading.check_exits):
                     print(f"{self.name} exits: {msg}")
+                    code_notes.append(msg)
             except Exception as e:
                 print(f"{self.name}: real-position exit check failed: {e}")
 
-        strategy = await read_strategy_resource(self.name, accounts_server)
-
-        account_before_close = await self.get_account_report(accounts_server)
-        close_message = close_positions_message(strategy, account_before_close)
-        close_summary = "(Position review did not complete -- it errored or ran out of turns; treat existing positions as unreviewed this cycle.)"
-        try:
-            close_result = await Runner.run(self.agent, close_message, max_turns=CLOSE_PASS_MAX_TURNS)
-            close_summary = close_result.final_output
-        except Exception as e:
-            print(f"{self.name}: position-review pass failed: {e}")
-
-        # Approve mode with no room for another real order today (daily limit used, too
-        # many staged, or STOP_TRADING): skip the scan and the new-trade pass -- every
-        # trade she picked would be refused at staging anyway.
+        # No room for a new real trade (trading off, no Schwab, daily limit used, too many
+        # staged, or STOP_TRADING): skip the scan and the new-trade pass -- every trade she
+        # picked would be refused at staging anyway.
         try:
             blocked = live_trading.new_trades_blocked()
         except Exception as e:
-            blocked = None
-            print(f"{self.name}: couldn't check real-order capacity: {e}")
+            blocked = f"couldn't check whether real trading is possible ({e})"
         if blocked:
             line = f"Skipped the new-trade search: {blocked}."
             print(f"{self.name}: {line}")
             write_log(self.name, "live", line)
             return
+
+        strategy = await read_strategy_resource(self.name, accounts_server)
 
         # Code-driven spread scan (spread_scanner.py): checks every candidate source's
         # option chains against the hard rules so Cathie picks from spreads that actually
@@ -261,9 +187,9 @@ class Trader:
         except Exception as e:
             print(f"{self.name}: spread scan failed: {e}")
 
-        # Re-read live state so the new-trade pass sees any closes pass 1 just made.
-        account_after_close = await self.get_account_report(accounts_server)
-        trade_message_text = new_trades_message(strategy, account_after_close, close_summary, scan_report)
+        account = await self.get_account_report(accounts_server)
+        code_summary = "\n".join(code_notes) or "No fills, closes or cancellations this cycle."
+        trade_message_text = new_trades_message(strategy, account, code_summary, scan_report)
         await Runner.run(self.agent, trade_message_text, max_turns=TRADE_PASS_MAX_TURNS)
 
     async def run_with_mcp_servers(self):
@@ -290,10 +216,8 @@ class Trader:
                 await self.run_agent(trader_mcp_servers, researcher_mcp_servers)
 
     async def run_with_trace(self):
-        # Options traders always run both the close and new-trade passes every cycle now
-        # (see run_agent_two_pass), so the do_trade-based trading/rebalancing label -- which
-        # only reflected the single-pass alternation other traders still use -- would be
-        # misleading for them.
+        # Options traders run the same cycle every time (see run_options_cycle), so the
+        # do_trade-based trading/rebalancing label other traders use would be misleading.
         if self.name in TRADERS_WITH_OPTIONS_TOOL:
             trace_name = f"{self.name}-cycle"
         else:
@@ -327,17 +251,11 @@ class Trader:
         try:
             account = Account.get(self.name)
             if self.name in TRADERS_WITH_OPTIONS_TOOL:
-                # Options traders' real capital lives entirely in their separate cathie_options
-                # pseudo-account -- the stock Account above is a second, untouched $10,000 pool
-                # they never actually trade (see CLAUDE.md), so calculate_portfolio_value() on it
-                # is always flat, and blending its starting balance in on top of options cash
-                # would double-count capital and not match the "Cash: $X" figure the dashboard
-                # already shows. Track live options cash directly instead; still stored on the
-                # stock Account's own time series field so app.py's chart plumbing is untouched.
-                options_data = read_account(f"{self.name.lower()}_options")
-                portfolio_value = options_data.get("cash", 10_000.0) if options_data else 10_000.0
-            else:
-                portfolio_value = account.calculate_portfolio_value()
+                # Cathie's chart is the real Schwab account's Day Net Liq, recorded by
+                # live_trading.record_account_value whenever balances are read (this
+                # cycle's account report, the dashboard). Nothing to add here.
+                return
+            portfolio_value = account.calculate_portfolio_value()
             account.portfolio_value_time_series.append(
                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), portfolio_value)
             )

@@ -100,8 +100,12 @@ def _message(spread: dict, level: str, price: float, cushion: float) -> str:
     else:
         head = (f"NEAR: {spread['underlying']} ${price:,.2f} is only {cushion:.1f}% "
                 f"(${abs(price - spread['short']):,.2f}) from the short {spread['short']:g} strike")
-    tail = (" Cathie's code closes it automatically at the natural price." if spread["owner"] == "CATHIE"
-            else " Nothing is closed automatically for your own spreads: decide in thinkorswim.")
+    if spread.get("hands_off"):
+        tail = " It's on your hands-off list, so nothing closes it automatically: decide in thinkorswim."
+    elif spread["owner"] == "CATHIE":
+        tail = " Cathie's code closes it automatically at the natural price."
+    else:
+        tail = " Nothing is closed automatically for your own spreads: decide in thinkorswim."
     return f"{head} -- {spread['label']}{risk}.{tail}"
 
 
@@ -130,6 +134,9 @@ def check(send: bool, near_pct: float = NEAR_PCT, verbose: bool = False) -> list
 
     positions = schwab_trading.option_positions(schwab_trading.get_account(include_positions=True))
     spreads = watched_spreads(positions, live_trading.load_ledger())
+    hands_off = live_trading.hands_off_tickers()
+    for sp in spreads:
+        sp["hands_off"] = sp["underlying"] in hands_off
     today = live_trading._now_et().date().isoformat()
     state = _load_state(today)
     prices, lines = {}, []
