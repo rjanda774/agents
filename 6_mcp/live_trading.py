@@ -3,15 +3,17 @@ Step 4 of live trading (see CLAUDE.md, "Live trading on Schwab"): Cathie propose
 real credit spreads, the user approves each one, code tracks the fills.
 
 CATHIE_EXECUTION_MODE (in .env) decides what sell_credit_spread does:
-  simulated  (default)  -- unchanged: opens a paper position in cathie_options.
-  approve               -- STAGES the trade in the cathie_live ledger instead. Nothing
+  simulated  (default)  -- no trading at all. Paper trading was removed on 2026-10-14
+                           (the user's call): Cathie trades real money or nothing.
+  approve               -- STAGES the trade in the cathie_live ledger. Nothing
                            reaches Schwab until the user runs `uv run approve_orders.py`,
                            which re-checks it live and asks y/N before sending.
   live                  -- not built yet; refused.
 Anything else is refused too, so a typo can't silently pick a mode.
 
-Real trades live in their own ledger, the `cathie_live` row in accounts.db, never
-mixed with Cathie's simulated history in `cathie_options`.
+Real trades live in their own ledger, the `cathie_live` row in accounts.db (the old
+paper account, `cathie_options`, is no longer used). Without a working Schwab
+connection nothing new is staged (new_trades_blocked, stage).
 
 Hard limits on real orders, all enforced here in code (not by prompt):
   - 1 contract per order; at most 2 orders sent per trading day (ET); at most 3 trades
@@ -241,12 +243,18 @@ def new_trades_blocked() -> str | None:
     Checked before Cathie's new-trade pass so she doesn't spend a whole pass picking
     trades stage() is certain to refuse -- seen live 2026-10-08: after 2 orders were sent,
     she "staged" two more that the daily limit had rejected, and reported them as staged."""
-    if execution_mode() != "approve":
-        return None
+    mode = execution_mode()
+    if mode != "approve":
+        # Paper trading was removed (2026-10-14, the user's call): Cathie trades real money
+        # through approval or not at all.
+        return (f"real trading is off (CATHIE_EXECUTION_MODE={mode!r}; paper trading was removed, "
+                "set it to 'approve' to trade)")
     if kill_switch_on():
         return "real trading is stopped (STOP_TRADING file present)"
+    import schwab_client
+    if not schwab_client.is_configured():
+        return "Schwab isn't connected (no login token); run `uv run schwab_auth_setup.py`"
     try:
-        import schwab_client
         age = schwab_client.token_age_days()
     except Exception:
         age = None
@@ -260,6 +268,12 @@ def new_trades_blocked() -> str | None:
     staged = sum(1 for s in ledger.spreads if s.status == "staged")
     if staged >= MAX_STAGED:
         return f"{staged} trades are already waiting for approval (limit {MAX_STAGED})"
+    # No Schwab, no trading: if the account can't be read right now, nothing new is opened.
+    try:
+        import schwab_trading
+        record_account_value(schwab_trading.risk_balances(schwab_trading.get_account())["net_liq"])
+    except Exception as e:
+        return f"the Schwab account can't be read right now ({e})"
     return None
 
 
@@ -286,9 +300,41 @@ def real_account_snapshot() -> dict:
         balances = schwab_trading.risk_balances(schwab_trading.get_account())
         snap["funds_available_for_trading"] = round(balances["funds_available"], 2)
         snap["day_net_liquidating_value"] = round(balances["net_liq"], 2)
+        record_account_value(balances["net_liq"])
     except Exception as e:
         snap["balances_error"] = f"couldn't read Schwab balances right now: {e}"
     return snap
+
+
+VALUE_HISTORY_ACCOUNT = "cathie_real_value_history"
+VALUE_HISTORY_EVERY_MINUTES = 15
+VALUE_HISTORY_MAX_POINTS = 20_000
+
+
+def record_account_value(net_liq: float | None):
+    """Add a Day Net Liq point to the real account's value history (the dashboard's top
+    chart), at most one per VALUE_HISTORY_EVERY_MINUTES. Called whenever the balances are
+    read anyway (dashboard refresh, Cathie's cycle). Best effort: never raises."""
+    try:
+        if net_liq is None or not math.isfinite(float(net_liq)) or net_liq <= 0:
+            return
+        from database import read_account, write_account
+        points = (read_account(VALUE_HISTORY_ACCOUNT) or {}).get("points", [])
+        now = _now_et()
+        if points:
+            last = _parse_et(points[-1][0])
+            if last and (now - last).total_seconds() < VALUE_HISTORY_EVERY_MINUTES * 60:
+                return
+        points.append([now.isoformat(timespec="seconds"), round(float(net_liq), 2)])
+        write_account(VALUE_HISTORY_ACCOUNT, {"points": points[-VALUE_HISTORY_MAX_POINTS:]})
+    except Exception:
+        pass
+
+
+def account_value_history() -> list[tuple[str, float]]:
+    """[(ISO time ET, Day Net Liq)], oldest first."""
+    from database import read_account
+    return [tuple(p) for p in (read_account(VALUE_HISTORY_ACCOUNT) or {}).get("points", [])]
 
 
 def overlapping_spread(ledger: LiveLedger, symbol: str, spread_type: str, expiration_date: str,
@@ -325,24 +371,29 @@ def stage(symbol: str, spread_type: str, short_strike: float, long_strike: float
 
     # Best-effort live checks now, so Cathie hears about obvious problems this cycle.
     # Everything is checked again, authoritatively, at approval time.
+    # Live checks now, so Cathie hears about obvious problems this cycle. Everything is
+    # checked again, authoritatively, at approval time. No Schwab, no trade: since
+    # 2026-10-14 a failed account read rejects the staging instead of warning.
     warnings = []
     try:
         import schwab_client
         import schwab_trading
-        if schwab_client.is_configured():
-            account = schwab_trading.get_account(include_positions=True)
-            own = users_own_underlyings(schwab_trading.option_positions(account), load_ledger())
-            if symbol in own:
-                return {"error": f"TRADE REJECTED: the account already holds the user's own {symbol} "
-                                 "options, and real trades skip those underlyings. Pick a different one."}
-            if max_loss is not None and staged_credit is not None:
-                problems = schwab_trading.check_spread_risk(
-                    max_loss, staged_credit * 100 * contracts, schwab_trading.risk_balances(account))
-                if problems:
-                    return {"error": "TRADE REJECTED: " + "; ".join(problems)}
+        if not schwab_client.is_configured():
+            return {"error": "TRADE REJECTED: Schwab isn't connected, and Cathie doesn't trade without it. "
+                             "Nothing was staged."}
+        account = schwab_trading.get_account(include_positions=True)
+        own = users_own_underlyings(schwab_trading.option_positions(account), load_ledger())
+        balances = schwab_trading.risk_balances(account)
     except Exception as e:
-        warnings.append(f"couldn't check against the Schwab account right now ({e}); "
-                        "it will be checked when the user approves")
+        return {"error": f"TRADE REJECTED: the Schwab account can't be read right now ({e}), and Cathie "
+                         "doesn't trade without it. Nothing was staged."}
+    if symbol in own:
+        return {"error": f"TRADE REJECTED: the account already holds the user's own {symbol} "
+                         "options, and real trades skip those underlyings. Pick a different one."}
+    if max_loss is not None and staged_credit is not None:
+        problems = schwab_trading.check_spread_risk(max_loss, staged_credit * 100 * contracts, balances)
+        if problems:
+            return {"error": "TRADE REJECTED: " + "; ".join(problems)}
 
     def _add(ledger: LiveLedger):
         active = [s for s in ledger.spreads if s.status in ACTIVE_STATUSES]
@@ -1211,7 +1262,7 @@ def ledger_summary() -> dict:
         "orders_sent_today": orders_sent_today(ledger),
         "daily_limit": MAX_ORDERS_PER_DAY,
         "note": ("Real positions (status 'open') are closed automatically by code when an exit "
-                 "rule fires (75% profit, breach, 7 DTE); close_credit_spread can't close them. "
+                 "rule fires (75% profit, breach, 7 DTE); you can't close them. "
                  "'staged' means waiting for the user's approval, 'pending' means sent to Schwab "
                  "but not filled, 'closing' means a close order is working."),
     }

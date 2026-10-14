@@ -189,33 +189,37 @@ def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.d
 
 
 def to_html(rows: list[dict]) -> str:
-    """Compact HTML table for the dashboard, CATHIE and MANUAL rows colour-coded."""
+    """Compact HTML table for the dashboard, CATHIE and MANUAL rows colour-coded.
+    Dark, semi-bold text on a light background: the user found the earlier pale-grey
+    text (especially the Note column) hard to read."""
     import html
     if not rows:
-        return "<div style='text-align:center;color:#aaa;padding:5px;'>No real positions</div>"
-    owner_style = {"CATHIE": "background:#8e44ad;", "MANUAL": "background:#7f8c8d;"}
-    status_color = {"OPEN": "#2ecc71", "CLOSING": "#f39c12", "CLOSED": "#aaa", "STAGED": "#3498db",
-                    "PENDING": "#3498db", "NOT": "#aaa", "REJECTED": "#aaa", "EXPIRED": "#aaa"}
-    head = "".join(f"<th style='padding:2px 4px;text-align:left;'>{c}</th>" for c in COLUMNS)
+        return "<div style='text-align:center;color:#222;font-weight:600;padding:5px;'>No real positions</div>"
+    owner_style = {"CATHIE": "background:#6c3483;", "MANUAL": "background:#566573;"}
+    status_color = {"OPEN": "#1e8449", "CLOSING": "#b9770e", "CLOSED": "#444", "STAGED": "#1f618d",
+                    "PENDING": "#1f618d", "NOT": "#444", "REJECTED": "#444", "EXPIRED": "#444"}
+    head = "".join(f"<th style='padding:3px 5px;text-align:left;font-weight:800;'>{c}</th>" for c in COLUMNS)
     body = []
     for r in rows:
         cells = []
         for c in COLUMNS:
             v = html.escape(str(r.get(c, "")))
-            style = "padding:1px 4px;white-space:nowrap;"
+            style = "padding:2px 5px;white-space:nowrap;"
             if c == "Owner":
-                v = f"<span style='{owner_style.get(r['Owner'], '')}color:#fff;border-radius:3px;padding:0 4px;'>{v}</span>"
+                v = f"<span style='{owner_style.get(r['Owner'], '')}color:#fff;border-radius:3px;padding:0 5px;'>{v}</span>"
             elif c == "Status":
-                style += f"color:{status_color.get(str(r['Status']).split(' ')[0], '#ddd')};"
+                style = (f"padding:2px 5px;max-width:150px;overflow-wrap:anywhere;color:{status_color.get(str(r['Status']).split(' ')[0], '#111')};"
+                         "font-weight:800;")
             elif c == "P&L" and v:
-                style += "color:#2ecc71;" if v.startswith("+") else "color:#e74c3c;"
+                style += "color:#1e8449;font-weight:800;" if v.startswith("+") else "color:#c0392b;font-weight:800;"
             elif c == "Note":
-                style = "padding:1px 4px;color:#999;"
+                style = "padding:2px 5px;color:#111;min-width:260px;"
             cells.append(f"<td style='{style}'>{v}</td>")
-        body.append("<tr style='border-top:1px solid #444;'>" + "".join(cells) + "</tr>")
-    return ("<div style='max-height:320px;overflow:auto;font-size:11px;'>"
+        body.append("<tr style='border-top:1px solid #bbb;'>" + "".join(cells) + "</tr>")
+    return ("<div style='max-height:360px;overflow:auto;font-size:13px;font-weight:600;color:#111;"
+            "background:#fafafa;border-radius:4px;'>"
             "<table style='width:100%;border-collapse:collapse;'>"
-            f"<thead><tr style='color:#aaa;'>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>")
+            f"<thead><tr style='color:#000;background:#e5e5e5;'>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>")
 
 
 def summary(rows: list[dict], balances: dict | None, ledger, error: str | None = None) -> dict:
@@ -253,6 +257,7 @@ def fetch() -> tuple[list[dict], dict]:
         account = schwab_trading.get_account(include_positions=True)
         positions = schwab_trading.option_positions(account)
         balances = schwab_trading.risk_balances(account)
+        live_trading.record_account_value(balances.get("net_liq"))  # the top chart's history
     except Exception as e:
         errors.append(f"account: {e}")
     try:

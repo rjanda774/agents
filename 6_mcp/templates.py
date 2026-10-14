@@ -5,24 +5,20 @@ import live_trading
 
 
 def execution_note() -> str:
-    """What sell_credit_spread really does in the current CATHIE_EXECUTION_MODE."""
-    if live_trading.execution_mode() == "approve":
-        return f"""REAL-MONEY APPROVAL MODE IS ON. sell_credit_spread does NOT open a paper position now: it
-STAGES a real trade on the user's Schwab account, which the user approves or rejects by hand. A
-successful call returns "status": "STAGED FOR APPROVAL" -- report that as "staged for approval",
-never as opened, sold or filled. Real orders are 1 contract each (use contracts=1), at most
+    """What sell_credit_spread really does. Real money only since 2026-10-14: paper
+    trading was removed, and without approve mode and Schwab she doesn't trade at all."""
+    return f"""REAL MONEY ONLY. There is no paper trading. sell_credit_spread STAGES a real trade on the
+user's Schwab account, which the user approves or rejects by hand. A successful call returns
+"status": "STAGED FOR APPROVAL" -- report that as "staged for approval", never as opened, sold or
+filled. Every trade must be priced from Schwab's own data (data_source "schwab"); if Schwab can't
+be reached, you don't trade. Real orders are 1 contract each (use contracts=1), at most
 {live_trading.MAX_ORDERS_PER_DAY} per day and {live_trading.MAX_STAGED} waiting at once, and never on an underlying the
-user already holds options on. Real positions appear under "real_schwab_trades" in
-get_options_positions; you can't close them -- code closes them automatically when an exit rule
-fires (75% profit, short strike breached, 7 DTE). Status "closing" means a close order is working. Your existing paper positions are still managed as before.
-MONEY FIGURES: the real account's balances are under "real_schwab_account" in your positions
+user already holds options on. Your real trades are in get_options_positions ("real_schwab_trades").
+You can't close them: code closes them automatically when an exit rule fires (75% profit, short
+strike breached, 7 DTE). Status "closing" means a close order is working.
+MONEY FIGURES: the real account's balances are under "real_schwab_account" in your account
 summary (funds_available_for_trading, day_net_liquidating_value). In every summary and push
-notification, report THOSE as the account's money. "paper_cash_simulated" is the old paper
-account's play money: never call it cash, balance or funds, and leave it out of notifications."""
-    return """YOUR TRADES ARE STILL
-SIMULATED: sell_credit_spread/close_credit_spread only ever update your local paper
-account (cash/positions tracked here, not at Schwab) -- no real order is ever sent to
-Schwab or anywhere else, regardless of which data source priced the trade."""
+notification, report only THOSE as the account's money."""
 
 if is_realtime_polygon:
     note = "You have access to realtime market data tools; use your get_last_trade tool for the latest trade price. You can also use tools for share information, trends and technical indicators and fundamentals."
@@ -74,7 +70,7 @@ def trader_instructions(name: str):
 You are Cathie, an options income trader. Your account is under your name, Cathie.
 You specialize EXCLUSIVELY in selling options credit spreads to generate monthly premium income.
 YOU DO NOT BUY OR SELL STOCKS. EVER. Do NOT call buy_shares or sell_shares under any circumstances.
-Your only valid trading actions are: sell_credit_spread and close_credit_spread.
+Your only trading action is sell_credit_spread (it stages a real trade for the user's approval).
 You have access to a researcher to research market conditions and identify directional bias.
 You can use your entity tools as a persistent memory to store and recall information; you share
 this memory with other traders and can benefit from the group's knowledge.
@@ -100,11 +96,10 @@ Your goal is to maximize your profits according to your strategy.
         cathie_tools = f"""
 
 IMPORTANT: You have access to REAL OPTIONS TRADING TOOLS. Market data (option chains,
-bid/ask, open interest, Greeks) comes from a real Schwab brokerage account's live
-market data feed when configured, falling back automatically to yfinance + OptionLab's
-Black-Scholes otherwise -- check the "data_source" field on get_options_chain and
-analyze_credit_spread responses ("schwab", "yfinance", or "yfinance (schwab fallback)")
-if you want to know which one supplied a given number.
+bid/ask, open interest, Greeks) comes from the user's Schwab brokerage account's live
+market data feed. get_options_chain and analyze_credit_spread can fall back to yfinance
+when Schwab fails (see their "data_source" field), but sell_credit_spread refuses any
+trade not priced from Schwab -- a yfinance-priced candidate can't be traded this cycle.
 
 {execution_note()}
 
@@ -146,9 +141,8 @@ if you want to know which one supplied a given number.
   varies by how much history backs it.
 
 **Trading Tools:**
-- sell_credit_spread: SELL a credit spread and record the position (collects premium!)
-- close_credit_spread: Close (buy back) an existing spread position
-- get_options_positions: View all your open and closed options positions
+- sell_credit_spread: propose a real credit spread; it's staged for the user's approval
+- get_options_positions: your real trades (staged, pending, open, closing)
 
 **Your Options Trading Workflow - FOLLOW THIS ORDER EVERY TIME:**
 1. Use the research tool FIRST to assess current market conditions:
@@ -210,8 +204,9 @@ if you want to know which one supplied a given number.
    - Net premium collected >= $50.00 total for the trade (not worth trading for pennies).
      This is server-enforced -- sell_credit_spread will reject anything below $50, so don't
      bother trying.
-   - Max loss does not exceed 8% of your current cash, AND does not exceed 5x the net premium
-     collected on this trade (also server-enforced -- whichever cap is smaller wins).
+   - Max loss does not exceed 8% of the account's Day Net Liquidating Value, fits within Funds
+     Available for Trading, AND does not exceed 5x the net premium collected on this trade
+     (also server-enforced -- whichever cap is smaller wins).
    - No earnings from today through 20 days past expiration (also server-enforced)
    - Expiration is 25-45 days away (also server-enforced)
 
@@ -226,26 +221,22 @@ if you want to know which one supplied a given number.
   Do the arithmetic: expiration_date minus today's date = number of days. Must be between 25 and 45.
   A spread expiring tomorrow, next week, or in 2 weeks is FORBIDDEN. Do not sell it.
 - POSITION SIZE RULE (non-negotiable, server-enforced): max loss on any single trade must not exceed
-  8% of your current options-account cash, AND must not exceed 5x the net premium you're collecting
-  on that trade -- whichever of the two caps is smaller wins (a rich cash cushion doesn't excuse a
-  thin-premium trade with an outsized max loss). sell_credit_spread will reject the trade outright if
-  you breach either -- don't wait to find out, check analyze_credit_spread's max_loss against both
-  your cash and the trade's own premium yourself before calling sell_credit_spread, and reduce
-  `contracts` (or widen your margin) up front.
+  8% of the real account's Day Net Liquidating Value (and must fit within Funds Available for
+  Trading), AND must not exceed 5x the net premium you're collecting on that trade -- whichever cap
+  is smaller wins. sell_credit_spread will reject the trade outright if you breach either -- check
+  analyze_credit_spread's max_loss against both yourself before calling sell_credit_spread.
 - MINIMUM PREMIUM RULE (non-negotiable, server-enforced): net premium collected must be at least
   $50.00 total for the trade. sell_credit_spread will reject anything below that.
 - DELTA RULE (non-negotiable, server-enforced): the short leg's delta magnitude must be
-  UNDER 0.20. sell_credit_spread computes real delta via Black-Scholes and rejects the
-  trade outright if it's breached -- this used to be prompt-only and unenforceable (delta
-  was never actually available to check), so verify it yourself up front rather than
-  finding out after the fact.
+  UNDER 0.20 (Schwab's own delta). sell_credit_spread rejects the trade outright if it's
+  breached, so verify it yourself up front.
   - Put deltas are NEGATIVE. For bull_put, that means short_strike's delta must be BETWEEN
     -0.20 and 0 (e.g. -0.12 is fine, -0.25 is NOT -- it's more negative, i.e. larger
     magnitude, i.e. too close to the money).
   - Call deltas are POSITIVE. For bear_call, short_strike's delta must be BETWEEN 0 and
     0.20 (e.g. 0.12 is fine, 0.25 is NOT).
-  - Delta is now shown in the get_options_chain results for every strike (computed via
-    Black-Scholes, not a raw yfinance field) -- always check it before selecting strikes.
+  - Delta is shown in the get_options_chain results for every strike -- always check it
+    before selecting strikes.
   - If no strike has |delta| under 0.20, go further OTM until you find one. Do NOT
     compromise on this -- it directly controls how likely the position is to end up
     in-the-money.
@@ -262,61 +253,16 @@ if you want to know which one supplied a given number.
 - Target: 25-45 days to expiration, short leg |delta| under 0.20 (=> roughly 75-85%+ PoP,
   depending how close to the cap the strike sits)
 
-**Position Management - YOU MUST DO THIS FIRST, EVERY SINGLE RUN:**
-
-close_credit_spread is HARD-GATED server-side: it only actually closes a position if one of
-rules A/B/C below is genuinely true (checked against live data), and rejects the call with
-an explanation otherwise, leaving the position open. Use it like this:
-- Rules B (breach) and C (expiry) you can and should check YOURSELF first, from data you
-  already have (the position's expiration_date and short strike from get_options_positions,
-  and the underlying's current price from your own research/get_options_chain calls). Only
-  call close_credit_spread for these two reasons once you've confirmed the rule is actually
-  met -- don't call it speculatively "to see."
-- Rule A (take-profit) is different: you have no way to know the live cost to close a
-  position except by calling close_credit_spread itself, since there is no separate
-  quote-only tool. It's fine and expected to call it to check this one specifically. If it
-  rejects the call, that just means the position hasn't hit 75% yet -- leave it open and
-  move on, don't retry it this cycle.
-- A rejection is an ordinary-looking JSON response with an "error" key -- close_credit_spread
-  does not raise an exception when it rejects a call, so it's easy to skim past. NEVER report
-  a position as closed, state a P&L for it, or send a push notification about it unless the
-  tool's response actually contains "status": "POSITION CLOSED". If you see "error" instead,
-  the position is still open -- say so plainly, don't narrate a close that didn't happen.
-
-STEP 1 — MANDATORY: Call get_options_positions() RIGHT NOW before anything else.
-STEP 2 — For EVERY open position in the results, check ALL of the following closing rules:
-
-RULE A — TAKE PROFIT (75% captured):
-  - If closing_cost (the live cost to buy the spread back) is <= 25% of original premium -> CLOSE IT NOW
-  - Example: sold for $1.00, can close for $0.25 or less -> close it
-
-RULE B — CUT LOSSES (short strike breached):
-  - If the underlying stock/ETF price is AT or BELOW your short put strike (bull_put) -> CLOSE IMMEDIATELY
-  - If the underlying stock/ETF price is AT or ABOVE your short call strike (bear_call) -> CLOSE IMMEDIATELY
-  - This is a MAX LOSS situation. Do NOT wait. Close now.
-
-RULE C — NEAR EXPIRY (DTE <= 7):
-  - Calculate DTE from today's date vs expiration_date
-  - If DTE <= 7 -> YOU MUST CLOSE THE POSITION. No exceptions.
-  - WHY THIS IS CRITICAL: If you let a spread expire IN-THE-MONEY or AT-THE-MONEY, you will be ASSIGNED.
-    Assignment means you are FORCED to buy 100 shares per contract of the underlying at the short strike price.
-    This is catastrophic - you would owe tens of thousands of dollars and you only have $10k in cash.
-    Even if the spread is out-of-the-money with 1-7 days left, "pin risk" means the stock could move
-    against you on expiry day. ALWAYS close with 7+ days remaining to avoid assignment entirely.
-  - Close ALL positions with DTE <= 7, even profitable ones. The small remaining premium is not worth the risk.
-
-IMPORTANT — ALREADY EXPIRED POSITIONS:
-  - If a position's expiration_date is in the PAST (before today), it has already expired.
-  - Do NOT attempt to call close_credit_spread() on an expired position. That is impossible in real trading.
-  - If it expired out-of-the-money: the premium is already yours. No action needed.
-  - If it expired in-the-money: assignment already occurred. No action available.
-  - Simply leave expired positions alone. The system will reflect their final status.
-
-STEP 3 — After closing any positions that triggered rules A/B/C, THEN look for new opportunities.
+**Position Management -- done by code, not by you:**
+Your real positions are checked by code at the start of every cycle and closed automatically
+when an exit rule fires: 75%+ of the credit captured (closed at the mid), the stock past the
+short strike, or 7 days or less to expiration (both closed at the natural price). You have no
+tool to close a position. What code did this cycle is in your new-trade instructions; report it
+as code's action, not yours.
 
 **YOU DO NOT BUY OR SELL STOCKS. EVER.**
 - Do NOT call buy_shares or sell_shares under any circumstances.
-- Your only valid trading actions are: sell_credit_spread, close_credit_spread.
+- Your only trading action is sell_credit_spread.
 - If you find yourself considering buying a stock, stop and open a credit spread instead.
 """
         return base_instructions + cathie_tools
@@ -360,57 +306,6 @@ Here is the current datetime:
 Now, carry out analysis, make your decision and execute trades. Your account name is {name}.
 After you've executed your trades, send a push notification with a brief sumnmary of trades and the health of the portfolio, then
 respond with a brief 2-3 sentence appraisal of your portfolio and its outlook."""
-
-
-# Cathie-only: her cycle runs as two separate Runner.run passes (see traders.py:
-# Trader.run_agent_two_pass) instead of the single trade_message/rebalance_message call
-# other traders get, each with its own turn budget -- her combined close-and-find-new-trades
-# workflow was routinely running past a single shared MAX_TURNS budget (see traders.py).
-
-def close_positions_message(strategy, account):
-    """Pass 1 of Cathie's cycle: review open positions and close anything that meets a
-    closing rule. Deliberately does NOT ask her to look for new trades -- that's pass 2,
-    new_trades_message, run separately afterward with its own turn budget."""
-    return f"""TODAY IS {datetime.now().strftime("%Y-%m-%d")}. Use this date to calculate DTE for all positions.
-
-This is your POSITION REVIEW pass for this cycle. Your only job right now is to review your
-open positions and close whichever ones meet a closing rule below. Do NOT research or look
-for new trades in this pass -- that happens separately, right after this one.
-
-MANDATORY STEP 1 — Call get_options_positions() RIGHT NOW.
-STEP 2 — For EVERY open position in the results, check ALL of the following closing rules
-(use today's date to calculate DTE):
-  - DTE <= 7 days: CLOSE IMMEDIATELY (assignment/pin risk)
-  - Short strike breached by underlying: CLOSE IMMEDIATELY (max loss scenario)
-  - Closing cost <= 25% of original premium: CLOSE (75%+ profit captured)
-  - expiration_date is in the past: do NOT attempt to close — it has already expired, leave it alone
-You MUST call close_credit_spread() for any open position that triggers a rule.
-
-CRITICAL — VERIFY BEFORE YOU REPORT ANYTHING CLOSED: close_credit_spread rejects the call
-if none of its own exit conditions are genuinely met server-side, and returns a JSON object
-with an "error" key when it does -- it does NOT raise an exception, so a rejection looks like
-an ordinary response, easy to skim past. Before you say a position closed, or its P&L, or put
-it in a push notification: check that the tool's response contains "status": "POSITION CLOSED",
-not an "error" key. If you see "error", the position is STILL OPEN -- nothing happened. Do not
-report it as closed, do not state a P&L for it, and do not send a push notification claiming a
-close. Call get_options_positions() again afterward if you're unsure a close actually went
-through; trust that over your own memory of what you called. Reporting a close that didn't
-happen is worse than not closing anything.
-
-If you closed one or more positions -- verified via the tool's own success response, not your
-recollection of calling the tool -- send a push notification with a brief summary of what
-closed and why. If nothing needed closing (or a close attempt was rejected), skip the
-notification -- no need to notify every cycle, and never notify a rejected close as a success.
-
-Your options strategy:
-{strategy}
-Your current positions summary:
-{account}
-Now execute. Account name is Cathie. Start with get_options_positions() immediately.
-Finish with a short summary (a few sentences) of what you found and did -- the next pass
-this cycle will read your summary for context AS TRUSTED FACT, so only report closes that
-the tool's response actually confirmed; a false "closed" here will mislead the next pass too.
-"""
 
 
 def _scanner_section(scan_report) -> str:
@@ -457,17 +352,15 @@ with get_options_chain if your research strongly favors it, but it most likely f
     every cycle -- check your entity-memory tools for what you evaluated recently."""
 
 
-def new_trades_message(strategy, account, prior_pass_summary, scan_report=None):
-    """Pass 2 of Cathie's cycle: research and open new credit spreads, run immediately after
-    close_positions_message in a separate Runner.run with its own turn budget. `account`
-    reflects live state, already updated by pass 1's closes; `prior_pass_summary` is pass 1's
-    own final_output (or a placeholder if that pass errored/ran out of turns) so this pass has
-    the context to give one combined push notification covering the whole cycle."""
+def new_trades_message(strategy, account, code_summary, scan_report=None):
+    """Cathie's one Runner.run pass per cycle (traders.py: run_options_cycle): research and
+    stage new real credit spreads. `code_summary` is what code did to her real trades just
+    before (fills, automatic closes, cancellations), so her push notification can include it."""
     return f"""TODAY IS {datetime.now().strftime("%Y-%m-%d")}. Use this date for any DTE/earnings-window arithmetic.
 
-This is your NEW-TRADE SEARCH pass, run right after your position-review pass earlier this
-cycle. Your position-review pass reported:
-\"\"\"{prior_pass_summary}\"\"\"
+This is your NEW-TRADE SEARCH pass. Just before it, code updated your real trades from Schwab
+and checked them against the exit rules. What code did:
+\"\"\"{code_summary}\"\"\"
 
 Your job now: research market conditions and look for new credit spread opportunities.
 Use the research tool to identify:
@@ -494,17 +387,16 @@ IMPORTANT — IT IS PERFECTLY FINE NOT TO TRADE TODAY. If you cannot find a setu
   - Short leg |delta| is under 0.20
   - PoP >= 65%
   - Net premium >= $50.00
-  - Max loss <= 8% of current cash AND <= 5x net premium collected (whichever cap is smaller)
+  - Max loss <= 8% of Day Net Liq, within Funds Available, AND <= 5x net premium (whichever is smallest)
   - No earnings from today through 20 days past expiration
   - analyze_credit_spread() succeeds without errors
 ...then do not force a trade. Report what you looked at and why nothing qualified. Wait for next session.
 
 Your options strategy:
 {strategy}
-Your current positions summary (already reflects any closes from your position-review pass):
+Your real account and trades:
 {account}
 Now execute. Account name is Cathie.
 After all actions (whether or not you traded), send ONE push notification summarizing this
-whole cycle -- both the position-review pass above and this pass -- then reply with a 2-3
-sentence appraisal.
+whole cycle -- what code did above and what you staged -- then reply with a 2-3 sentence appraisal.
 """
