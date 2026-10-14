@@ -59,6 +59,7 @@ class SchwabAuthError(RuntimeError):
 
 
 _client = None
+_client_login = None  # creation_timestamp of the login _client was built from
 _client_lock = threading.Lock()
 
 # Schwab doesn't publish a single official rate limit the way Polygon does, but a
@@ -146,13 +147,28 @@ def token_age_days() -> float | None:
         return None
 
 
+def _token_login_stamp():
+    """creation_timestamp of the login in the token file (changes only when
+    schwab_auth_setup.py runs again, not on routine refreshes), or None."""
+    try:
+        return _read_token().get("creation_timestamp")
+    except Exception:
+        return None
+
+
 def _get_client():
-    global _client
-    if _client is not None:
+    """The shared Schwab client. Rebuilt when the token file holds a NEW login: a
+    process that was already running (dashboard, trading floor, breach watcher) kept
+    the old, expired login in memory after the user re-ran schwab_auth_setup.py, and
+    every call failed with invalid_grant until it was restarted (2026-10-14)."""
+    global _client, _client_login
+    stamp = _token_login_stamp()
+    if _client is not None and (stamp is None or stamp == _client_login):
         return _client
     with _client_lock:
-        if _client is not None:
+        if _client is not None and (stamp is None or stamp == _client_login):
             return _client
+        _client = None
         if not (SCHWAB_APP_KEY and SCHWAB_APP_SECRET):
             raise SchwabNotConfiguredError(
                 "SCHWAB_APP_KEY/SCHWAB_APP_SECRET are not set in .env."
@@ -167,6 +183,7 @@ def _get_client():
             _client = schwab.auth.client_from_access_functions(
                 SCHWAB_APP_KEY, SCHWAB_APP_SECRET, _read_token, _write_token
             )
+            _client_login = stamp
         except ImportError as e:
             raise SchwabNotConfiguredError(
                 "the 'schwab-py' package isn't installed -- run `uv sync` in 6_mcp/."

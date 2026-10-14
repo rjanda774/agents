@@ -260,5 +260,10 @@ def fetch() -> tuple[list[dict], dict]:
         orders = schwab_trading.recent_orders(days=2)
     except Exception as e:
         errors.append(f"orders: {e}")
+    error = "; ".join(errors) or None
+    if error and ("invalid_grant" in error or "Refresh token is invalid" in error):
+        error = ("Schwab login expired or was revoked: run `uv run schwab_auth_setup.py`. "
+                 "This panel reconnects by itself within a minute after that. "
+                 "Positions can't be read until then, so OPEN rows may wrongly say legs weren't found.")
     rows = build(positions, orders, ledger, auto_close=live_trading.auto_close_manual())
-    return rows, summary(rows, balances, ledger, "; ".join(errors) or None)
+    return rows, summary(rows, balances, ledger, error)
