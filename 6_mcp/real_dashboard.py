@@ -90,10 +90,11 @@ def _manual_note(sh, lg, credit, option_type, qty, auto_close: bool) -> str:
 
 
 def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.date | None = None,
-          auto_close: bool = False) -> list[dict]:
+          auto_close: bool = False, hands_off: set | None = None) -> list[dict]:
     """Dashboard rows. account_positions: schwab_trading.option_positions(); orders:
     schwab_trading.recent_orders(); ledger: live_trading.LiveLedger. auto_close: the
     user turned on AUTO_CLOSE_MANUAL_AT_PROFIT."""
+    hands_off = hands_off or set()
     today = today or dt.date.today()
     by_symbol = {p["symbol"]: p for p in account_positions}
     closing = _closing_orders(orders)
@@ -124,7 +125,9 @@ def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.d
             "Expiry": _exp(s.expiration_date), "DTE": _dte(s.expiration_date, today), "Status": status,
             "Credit": f"{credit:.2f}" if credit else "", "Now": f"{now:.2f}" if now is not None else "",
             "P&L": _money(pnl),
-            "Note": f"auto-close at <= {target:.2f}, breach of {s.short_strike:g}, or 7 DTE" if target else "",
+            "Note": ("HANDS OFF (hands_off.txt): never closed automatically; you close it"
+                     if s.symbol in hands_off else
+                     f"auto-close at <= {target:.2f}, breach of {s.short_strike:g}, or 7 DTE" if target else ""),
         })
 
     # Everything else at Schwab is the user's own.
@@ -160,7 +163,8 @@ def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.d
                 "Strikes": strikes, "Qty": int(qty), "Expiry": _exp(expiration), "DTE": _dte(expiration, today),
                 "Status": status, "Credit": f"{credit:.2f}" if credit is not None else "",
                 "Now": f"{now:.2f}" if now is not None else "", "P&L": _money(pnl),
-                "Note": _manual_note(sh, lg, credit, option_type, qty, auto_close),
+                "Note": ("yours; HANDS OFF (hands_off.txt): never auto-closed" if auto_close and underlying in hands_off
+                         else _manual_note(sh, lg, credit, option_type, qty, auto_close)),
             })
 
     # Cathie's recent trades that aren't held: waiting, sent, or finished.
@@ -270,5 +274,6 @@ def fetch() -> tuple[list[dict], dict]:
         error = ("Schwab login expired or was revoked: run `uv run schwab_auth_setup.py`. "
                  "This panel reconnects by itself within a minute after that. "
                  "Positions can't be read until then, so OPEN rows may wrongly say legs weren't found.")
-    rows = build(positions, orders, ledger, auto_close=live_trading.auto_close_manual())
+    rows = build(positions, orders, ledger, auto_close=live_trading.auto_close_manual(),
+                 hands_off=live_trading.hands_off_tickers())
     return rows, summary(rows, balances, ledger, error)

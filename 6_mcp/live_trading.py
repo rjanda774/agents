@@ -49,6 +49,9 @@ from pydantic import BaseModel
 
 LEDGER_NAME = "cathie_live"
 STOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "STOP_TRADING")
+# Tickers whose real positions code must never close automatically (the user's own
+# "hands off" list, added 2026-10-14): one ticker per line, like watchlist.txt.
+HANDS_OFF_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hands_off.txt")
 
 MAX_CONTRACTS_PER_ORDER = 1
 MAX_ORDERS_PER_DAY = 2
@@ -106,6 +109,18 @@ def regular_session_open() -> bool:
     holiday Schwab simply won't fill, and the order expires or gets cancelled."""
     now = _now_et()
     return now.weekday() < 5 and dt.time(9, 30) <= now.time() < dt.time(16, 0)
+
+
+def hands_off_tickers() -> set[str]:
+    """Underlyings on the user's hands-off list (hands_off.txt), read fresh each call.
+    Code never closes a real position on these automatically -- Cathie's or, with
+    AUTO_CLOSE_MANUAL_AT_PROFIT, the user's own; the user closes them by hand. Unlike
+    STOP_TRADING, everything else keeps working. Missing file = empty list."""
+    try:
+        from universe import load_custom_watchlist
+        return set(load_custom_watchlist(HANDS_OFF_PATH))
+    except Exception:
+        return set()
 
 
 def kill_switch_on() -> bool:
@@ -796,6 +811,7 @@ def check_exits(send: bool = True) -> list[str]:
 
     messages = []
     now = _now_et()
+    hands_off = hands_off_tickers()
     positions = schwab_trading.option_positions(schwab_trading.get_account(include_positions=True))
     held = {p["symbol"]: p["quantity"] for p in positions}
     for s in open_:
@@ -844,8 +860,18 @@ def check_exits(send: bool = True) -> list[str]:
         if v["problem"]:
             messages.append(f"{s.label()}: can't check exits: {v['problem']}")
             continue
+        off = " [hands off: never closed automatically]" if s.symbol in hands_off else ""
         if not v["rule"]:
-            messages.append(f"{s.label()}: no exit rule met ({detail})")
+            messages.append(f"{s.label()}: no exit rule met ({detail}){off}")
+            continue
+        if off:
+            # On the user's hands-off list: report what would have fired, send nothing.
+            # The legs check above still runs, so a close done by hand gets recorded.
+            msg = (f"{s.label()}: {RULE_TEXT[v['rule']]} ({detail}), but {s.symbol} is on the hands-off "
+                   "list (hands_off.txt): NOT closing it -- close it yourself in thinkorswim if you want")
+            messages.append(msg)
+            if send:
+                _warn_hands_off_once(s, v["rule"], msg)
             continue
         how = "natural" if v["rule"] in ("dte", "breach") else "mid"
         verdict = f"{s.label()}: CLOSE -- {RULE_TEXT[v['rule']]}; {detail}; limit {v['debit']:.2f} debit ({how})"
@@ -863,6 +889,20 @@ def check_exits(send: bool = True) -> list[str]:
     if manual:
         messages += _check_manual_exits(positions, send)
     return messages
+
+
+_hands_off_warned: set = set()
+
+
+def _warn_hands_off_once(spread, rule: str, msg: str):
+    """Push/log a hands-off spread's exit rule once per spread, rule and day (per process),
+    so the user hears about it without a push every cycle."""
+    key = (spread.id, rule, _now_et().date().isoformat())
+    if key in _hands_off_warned:
+        return
+    _hands_off_warned.add(key)
+    _log(msg)
+    _push(msg)
 
 
 def _check_manual_exits(positions: list[dict], send: bool) -> list[str]:
@@ -891,10 +931,13 @@ def _check_manual_exits(positions: list[dict], send: bool) -> list[str]:
             groups.setdefault((p["underlying"], p["expiration"], p["option_type"]), []).append(p)
     messages = []
     today = _now_et().date()
+    hands_off = hands_off_tickers()
     for (underlying, expiration, option_type), legs in sorted(groups.items(), key=lambda kv: str(kv[0])):
         for sh, lg, qty in _pair_legs(legs):
             if not (sh and lg):
                 continue
+            if underlying in hands_off:
+                continue  # the user's hands-off list: never auto-closed
             qty = int(qty)
             credit_spread = lg["strike"] < sh["strike"] if option_type == "put" else lg["strike"] > sh["strike"]
             label = (f"{underlying} {'bull_put' if option_type == 'put' else 'bear_call'} "

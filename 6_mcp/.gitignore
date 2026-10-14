@@ -12,6 +12,8 @@ tradealgo_discovery.json
 .tradealgo_darkpool_raw.json
 # Your own hand-edited watchlist; watchlist.example.txt is the tracked template
 watchlist.txt
+# Tickers whose real positions code never closes automatically (live_trading.py)
+hands_off.txt
 .schwab_preview_last.json
 STOP_TRADING
 .breach_alerts.json
