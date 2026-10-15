@@ -300,6 +300,15 @@ def users_own_underlyings(positions: list[dict], ledger: LiveLedger) -> set[str]
     return {p["underlying"] for p in positions if p.get("symbol") not in cathies and p.get("underlying")}
 
 
+def held_underlyings(positions: list[dict], ledger: LiveLedger,
+                     statuses=ACTIVE_STATUSES, exclude_id: str | None = None) -> set[str]:
+    """Every underlying already carrying risk, for the sector cap: the user's own option
+    positions plus Cathie's spreads in `statuses` (staged counts when proposing a new trade,
+    but not when approving one, or three staged semis would block each other forever)."""
+    mine = {s.symbol for s in ledger.spreads if s.status in statuses and s.id != exclude_id}
+    return users_own_underlyings(positions, ledger) | mine
+
+
 def real_account_snapshot() -> dict:
     """Live Schwab balances plus Cathie's active real trades, for her account summary in
     approve mode. Added 2026-10-09: her end-of-cycle push reported the PAPER account's cash
@@ -397,7 +406,10 @@ def stage(symbol: str, spread_type: str, short_strike: float, long_strike: float
             return {"error": "TRADE REJECTED: Schwab isn't connected, and Cathie doesn't trade without it. "
                              "Nothing was staged."}
         account = schwab_trading.get_account(include_positions=True)
-        own = users_own_underlyings(schwab_trading.option_positions(account), load_ledger())
+        positions = schwab_trading.option_positions(account)
+        snapshot = load_ledger()
+        own = users_own_underlyings(positions, snapshot)
+        held = held_underlyings(positions, snapshot)
         balances = schwab_trading.risk_balances(account)
     except Exception as e:
         return {"error": f"TRADE REJECTED: the Schwab account can't be read right now ({e}), and Cathie "
@@ -405,6 +417,14 @@ def stage(symbol: str, spread_type: str, short_strike: float, long_strike: float
     if symbol in own:
         return {"error": f"TRADE REJECTED: the account already holds the user's own {symbol} "
                          "options, and real trades skip those underlyings. Pick a different one."}
+    # Sector cap (sector_cap.py), checked here rather than inside _add(): the lookup can use
+    # the network, which must not happen while the database is locked.
+    import sector_cap
+    cap = sector_cap.assess(symbol, held)
+    if cap["problem"]:
+        return {"error": "TRADE REJECTED: " + cap["problem"] + ". Nothing was staged."}
+    if cap["warning"]:
+        warnings.append(cap["warning"])
     if max_loss is not None and staged_credit is not None:
         problems = schwab_trading.check_spread_risk(max_loss, staged_credit * 100 * contracts, balances)
         if problems:
@@ -549,8 +569,18 @@ def check_for_approval(spread: LiveSpread) -> dict:
     balances = schwab_trading.risk_balances(account)
     lines.append(f"Funds Available ${balances['funds_available']:,.2f}, Day Net Liq ${balances['net_liq']:,.2f}")
     problems.extend(schwab_trading.check_spread_risk(max_loss, net_premium, balances))
-    if spread.symbol in users_own_underlyings(schwab_trading.option_positions(account), ledger):
+    positions = schwab_trading.option_positions(account)
+    if spread.symbol in users_own_underlyings(positions, ledger):
         problems.append(f"you already hold your own {spread.symbol} options; real trades skip those underlyings")
+    # Sector cap against what is really held: the user's positions plus Cathie's pending,
+    # open and closing spreads. Other staged trades don't count (they're not risk yet).
+    import sector_cap
+    cap = sector_cap.assess(spread.symbol, held_underlyings(
+        positions, ledger, statuses={"pending", "open", "closing"}, exclude_id=spread.id))
+    if cap["problem"]:
+        problems.append(cap["problem"])
+    if cap["warning"]:
+        lines.append(f"note: {cap['warning']}")
     clash = overlapping_spread(ledger, spread.symbol, spread.spread_type, spread.expiration_date,
                                spread.short_strike, spread.long_strike, exclude_id=spread.id)
     if clash and clash.status != "staged":

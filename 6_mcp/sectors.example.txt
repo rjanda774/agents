@@ -1,0 +1,17 @@
+# TEMPLATE -- copy this to sectors.txt and edit that copy:
+#     Copy-Item sectors.example.txt sectors.txt
+# sectors.txt is gitignored, so your edits never show up as git changes.
+#
+# Sector cap (sector_cap.py): real trades may hold at most MAX_PER_SECTOR (default 2, set in
+# .env; 0 turns the cap off) different underlyings in one group, counting Cathie's spreads
+# AND your own option positions at Schwab. Built in: semiconductors plus the AI-hardware
+# names that trade with them (memory/storage, optical, AI connectivity). Anything else uses
+# yfinance's sector. Use this file to put a ticker in a group of your own choosing; it
+# beats the built-ins. Read fresh on every check, no restart needed.
+#
+# Format: TICKER group_name   (one per line, '#' starts a comment)
+#
+# Examples:
+# ORCL ai_infrastructure
+# CRWV ai_infrastructure
+# SNDK memory_storage
