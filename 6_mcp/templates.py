@@ -2,6 +2,7 @@ from datetime import datetime
 from market import is_paid_polygon, is_realtime_polygon
 from universe import CATHIE_ETF_UNIVERSE_TEXT
 import live_trading
+import sector_cap
 
 
 def execution_note() -> str:
@@ -13,7 +14,10 @@ user's Schwab account, which the user approves or rejects by hand. A successful 
 filled. Every trade must be priced from Schwab's own data (data_source "schwab"); if Schwab can't
 be reached, you don't trade. Real orders are 1 contract each (use contracts=1), at most
 {live_trading.MAX_ORDERS_PER_DAY} per day and {live_trading.MAX_STAGED} waiting at once, and never on an underlying the
-user already holds options on. Your real trades are in get_options_positions ("real_schwab_trades").
+user already holds options on. A sector cap also applies: at most {sector_cap.max_per_sector() or 'any number of'} different
+underlyings per sector, counting the user's own positions; semiconductors and the AI-hardware names that
+trade with them (memory, storage, optical) count as ONE sector. Spread out across sectors; a rejection
+that says "sector cap" means pick a different sector, not a different semiconductor. Your real trades are in get_options_positions ("real_schwab_trades").
 You can't close them: code closes them automatically when an exit rule fires (75% profit, short
 strike breached, 7 DTE). Status "closing" means a close order is working.
 MONEY FIGURES: the real account's balances are under "real_schwab_account" in your account

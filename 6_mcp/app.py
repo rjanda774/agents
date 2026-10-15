@@ -215,6 +215,12 @@ class Trader:
         err = f"<br/><span style='color:#c0392b'>{sm['error']}</span>" if sm.get("error") else ""
         auto = (f", auto-closed by Cathie {pnl(sm['manual_auto_closed_pnl'])}"
                 if sm.get("manual_auto_closed_pnl") else "")
+        import sector_cap
+        cap = sector_cap.max_per_sector()
+        crowded = "; ".join(
+            f"<span style='color:{'#c0392b' if cap and len(n) >= cap else '#111'}'>{g}: {', '.join(n)}"
+            f" ({len(n)}/{cap or 'no cap'})</span>" for g, n in (sm.get("sector_groups") or {}).items())
+        sectors = f"<br/>SECTORS: {crowded}" if crowded else ""
         return (
             "<div style='text-align:center;font-size:14px;font-weight:600;color:#111;background:#fafafa;"
             "border-radius:4px;padding:4px;line-height:1.6;'>"
@@ -225,7 +231,7 @@ class Trader:
             f"CATHIE: {sm['cathie_open']} open, unrealized {pnl(sm['cathie_open_pnl'])}, "
             f"realized {pnl(sm['cathie_realized'])} &nbsp;|&nbsp; orders today {sm['orders_today']}/{sm['daily_limit']}<br/>"
             f"MANUAL: {sm['manual_open']} open, unrealized {pnl(sm['manual_open_pnl'])}"
-            f"{auto}{err}</div>"
+            f"{auto}{sectors}{err}</div>"
         )
 
     def get_real_positions_html(self) -> str:

@@ -256,12 +256,18 @@ def fetch() -> tuple[list[dict], dict]:
     import live_trading
     ledger = live_trading.load_ledger()
     positions, orders, balances, errors = [], [], None, []
+    sector_groups: dict = {}
     try:
         import schwab_trading
         account = schwab_trading.get_account(include_positions=True)
         positions = schwab_trading.option_positions(account)
         balances = schwab_trading.risk_balances(account)
         live_trading.record_account_value(balances.get("net_liq"))  # the top chart's history
+        try:
+            import sector_cap
+            sector_groups = sector_cap.exposure({p["underlying"] for p in positions if p.get("underlying")})
+        except Exception:
+            pass
     except Exception as e:
         errors.append(f"account: {e}")
     try:
@@ -276,4 +282,6 @@ def fetch() -> tuple[list[dict], dict]:
                  "Positions can't be read until then, so OPEN rows may wrongly say legs weren't found.")
     rows = build(positions, orders, ledger, auto_close=live_trading.auto_close_manual(),
                  hands_off=live_trading.hands_off_tickers())
-    return rows, summary(rows, balances, ledger, error)
+    out = summary(rows, balances, ledger, error)
+    out["sector_groups"] = sector_groups
+    return rows, out

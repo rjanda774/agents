@@ -209,7 +209,7 @@ def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
     report["notes"].extend(notes)
 
     mode = "simulated"
-    net_liq, own_underlyings = None, set()
+    net_liq, own_underlyings, held = None, set(), set()
     try:
         import live_trading
         import schwab_trading
@@ -217,8 +217,10 @@ def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
         account = schwab_trading.get_account(include_positions=True)
         net_liq = schwab_trading.risk_balances(account)["net_liq"]
         if mode == "approve":
-            own_underlyings = live_trading.users_own_underlyings(
-                schwab_trading.option_positions(account), live_trading.load_ledger())
+            positions = schwab_trading.option_positions(account)
+            ledger = live_trading.load_ledger()
+            own_underlyings = live_trading.users_own_underlyings(positions, ledger)
+            held = live_trading.held_underlyings(positions, ledger)
     except Exception as e:
         report["notes"].append(f"couldn't read the Schwab account ({e}); 8%-of-net-liq cap not applied")
     for sym in own_underlyings:
@@ -287,8 +289,22 @@ def scan(top_n: int = TOP_N, time_budget: float = TIME_BUDGET_SECONDS) -> dict:
             s["earnings"] = "unknown"
         kept.append(s)
 
+    # Sector cap (sector_cap.py), approve mode only, on the few tickers that survived every
+    # other rule so the lookups stay cheap. Spreads in a full sector are dropped here so the
+    # top list isn't filled with names staging would refuse.
+    dropped_sector = 0
+    if mode == "approve" and held:
+        import sector_cap
+        verdicts = {sym: sector_cap.assess(sym, held) for sym in sorted({s["symbol"] for s in kept})}
+        full = {sym: v["group"] for sym, v in verdicts.items() if v["problem"]}
+        dropped_sector = sum(1 for s in kept if s["symbol"] in full)
+        kept = [s for s in kept if s["symbol"] not in full]
+        if full:
+            report["notes"].append("sector cap full for: " + ", ".join(
+                f"{sym} ({grp})" for sym, grp in sorted(full.items())))
+
     kept.sort(key=lambda s: s["reward_to_risk"], reverse=True)
-    report.update(
+    report.update(dropped_sector_cap=dropped_sector,
         candidates=len(symbols), scanned=scanned, chain_errors=failed,
         qualified=len(kept), dropped_for_earnings=dropped_earnings,
         dropped_recent_earnings=dropped_recent, under_price_floor=under_price,
