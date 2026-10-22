@@ -89,6 +89,16 @@ def _manual_note(sh, lg, credit, option_type, qty, auto_close: bool) -> str:
     return f"yours; auto-close at <= {credit * 0.25:.2f} (75% profit) only"
 
 
+def filled_pending(ledger, held_symbols) -> set:
+    """IDs of Cathie's spreads still marked 'pending' in the ledger whose two contracts are
+    already at Schwab, i.e. filled. The ledger only moves them to 'open' at the next
+    reconcile (the start of her hourly cycle, or any approve_orders.py run), so until then
+    the dashboard and breach_watch.py would mistake them for the user's own positions.
+    Found live 2026-10-21: an approved MU 800/790 showed as MANUAL after it filled."""
+    return {s.id for s in ledger.spreads
+            if s.status == "pending" and s.short_symbol in held_symbols and s.long_symbol in held_symbols}
+
+
 def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.date | None = None,
           auto_close: bool = False, hands_off: set | None = None) -> list[dict]:
     """Dashboard rows. account_positions: schwab_trading.option_positions(); orders:
@@ -102,12 +112,16 @@ def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.d
 
     # Cathie's spreads that hold (or should hold) contracts at Schwab.
     cathie_syms = set()
+    filled = filled_pending(ledger, by_symbol)
     for s in ledger.spreads:
-        if s.status not in ("open", "closing"):
+        if s.status not in ("open", "closing") and s.id not in filled:
             continue
         cathie_syms |= {s.short_symbol, s.long_symbol}
         sh, lg = by_symbol.get(s.short_symbol), by_symbol.get(s.long_symbol)
         credit = s.fill_credit or s.limit_credit
+        if s.id in filled and sh and lg:
+            # Not reconciled yet, so there is no recorded fill: use Schwab's own average prices.
+            credit = (sh.get("average_price") or 0) - (lg.get("average_price") or 0) or credit
         now = pnl = None
         if sh and lg and sh.get("market_value") is not None and lg.get("market_value") is not None:
             now = -(sh["market_value"] + lg["market_value"]) / (100 * s.contracts)
@@ -116,6 +130,8 @@ def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.d
             status = f"CLOSING ({s.close_rule}) @{s.close_limit_debit:.2f}"
         elif not (sh and lg):
             status = "OPEN (legs not found at Schwab)"
+        elif s.id in filled:
+            status = "OPEN (filled; ledger updates next cycle)"
         else:
             status = "OPEN"
         target = credit * 0.25 if credit else None
@@ -170,7 +186,7 @@ def build(account_positions: list[dict], orders: list[dict], ledger, today: dt.d
     # Cathie's recent trades that aren't held: waiting, sent, or finished.
     cutoff = today - dt.timedelta(days=SHOW_DONE_DAYS)
     for s in reversed(ledger.spreads):
-        if s.status in ("open", "closing"):
+        if s.status in ("open", "closing") or s.id in filled:
             continue
         when = (s.closed_at or s.submitted_at or s.staged_at or "")[:10]
         try:

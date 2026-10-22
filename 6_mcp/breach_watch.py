@@ -36,12 +36,13 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".breach_a
 def watched_spreads(positions: list[dict], ledger) -> list[dict]:
     """Every credit spread / lone short option at Schwab, as dicts: owner, underlying,
     option_type, short, long (or None), expiration, qty, max_loss (or None), label."""
-    from real_dashboard import _pair_legs
+    from real_dashboard import _pair_legs, filled_pending
 
     out = []
     cathies = set()
+    filled = filled_pending(ledger, {p["symbol"] for p in positions})
     for s in ledger.spreads:
-        if s.status not in ("open", "closing"):
+        if s.status not in ("open", "closing") and s.id not in filled:
             continue
         cathies |= {s.short_symbol, s.long_symbol}
         out.append({
