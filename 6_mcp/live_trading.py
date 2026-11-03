@@ -673,6 +673,31 @@ def fill_net_credit(order: dict) -> float | None:
     return round(total / filled, 4) if filled else None
 
 
+def _follow_replaced(order_id, record, leg_symbols, closing):
+    """If Schwab says `order_id` was REPLACED (editing a working order in thinkorswim
+    gives it a new order ID and retires the old one), follow it to the order that took its
+    place: the ID Schwab lists in replacingOrderCollection, else the newest order with the
+    same legs. Returns (order_id, record) for the live order, or the inputs unchanged when
+    no replacement can be found. Found live 2026-11-03: reconcile kept trying to cancel
+    the dead ID ("Order in state REPLACED cannot be canceled"), leaving the trade stuck."""
+    import schwab_execution
+    for _ in range(5):  # an order can be edited more than once
+        if record.get("status") != "REPLACED":
+            break
+        new_id = None
+        for child in record.get("replacingOrderCollection") or []:
+            if child.get("orderId"):
+                new_id = child["orderId"]
+        if new_id is None:
+            found = schwab_execution.find_recent_order(leg_symbols, since_minutes=24 * 60,
+                                                       closing=closing, exclude_ids={order_id})
+            new_id = found.get("orderId") if found else None
+        if new_id is None or new_id == order_id:
+            break
+        order_id, record = new_id, schwab_execution.get_order(new_id)
+    return order_id, record
+
+
 def reconcile() -> list[str]:
     """Bring the ledger up to date with Schwab: record fills at their real price, mark
     cancelled/rejected/expired orders, cancel orders working 30+ minutes, expire staged
@@ -707,9 +732,14 @@ def reconcile() -> list[str]:
                     update.update(status="not_filled", note="no matching order found at Schwab; check thinkorswim")
             if order_id is not None:
                 record = schwab_execution.get_order(order_id)
+                if record.get("status") == "REPLACED":
+                    new_id, record = _follow_replaced(order_id, record, {s.short_symbol, s.long_symbol}, False)
+                    if new_id != order_id:
+                        update["order_id"] = order_id = new_id
+                        messages.append(f"{s.label()}: order was edited at Schwab; now tracking order {new_id}")
                 status = record.get("status")
                 age_min = ((now - t).total_seconds() / 60) if (t := _parse_et(s.submitted_at)) else 0
-                if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL")
+                if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL", "REPLACED")
                         and age_min >= UNFILLED_CANCEL_MINUTES):
                     schwab_execution.cancel_order(order_id)
                     record = schwab_execution.wait_for_status(order_id, {"CANCELED"}, timeout=30)
@@ -1087,8 +1117,12 @@ def _reconcile_manual_closes(now: dt.datetime) -> list[str]:
                     update.update(status="not_filled", done_at=now.isoformat())
             if order_id is not None:
                 record = schwab_execution.get_order(order_id)
+                if record.get("status") == "REPLACED":
+                    new_id, record = _follow_replaced(order_id, record, {m.short_symbol, m.long_symbol}, True)
+                    if new_id != order_id:
+                        update["order_id"] = order_id = new_id
                 status = record.get("status")
-                if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL")
+                if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL", "REPLACED")
                         and age_min >= UNFILLED_CANCEL_MINUTES):
                     schwab_execution.cancel_order(order_id)
                     record = schwab_execution.wait_for_status(order_id, {"CANCELED"}, timeout=30)
@@ -1250,8 +1284,13 @@ def _reconcile_closing(s: LiveSpread, now: dt.datetime) -> str | None:
                           note="no close order found at Schwab; will retry")
     if order_id is not None:
         record = schwab_execution.get_order(order_id)
+        if record.get("status") == "REPLACED":
+            new_id, record = _follow_replaced(order_id, record, {s.short_symbol, s.long_symbol}, True)
+            if new_id != order_id:
+                update["close_order_id"] = order_id = new_id
+                update["note"] = f"close order was edited at Schwab; now tracking order {new_id}"
         status = record.get("status")
-        if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL")
+        if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL", "REPLACED")
                 and age_min >= UNFILLED_CANCEL_MINUTES):
             schwab_execution.cancel_order(order_id)
             record = schwab_execution.wait_for_status(order_id, {"CANCELED"}, timeout=30)
