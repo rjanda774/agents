@@ -51,6 +51,13 @@ class Trader:
 
     def get_portfolio_value_chart(self):
         df = self.get_portfolio_value_df()
+        if self.name == "Cathie" and not df.empty:
+            # Points are also recorded after hours and on weekends (dashboard refreshes).
+            # The axis below hides those hours, and Plotly drops any point inside a hidden
+            # range along with the line segments touching it, which shredded the line into
+            # fragments. Plot only the points that fall inside the visible hours.
+            hour = df["datetime"].dt.hour + df["datetime"].dt.minute / 60
+            df = df[(df["datetime"].dt.dayofweek < 5) & (hour >= 9.5) & (hour <= 16.25)]
         if df.empty:
             # Return empty chart if no data
             fig = px.line()
