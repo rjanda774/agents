@@ -17,7 +17,15 @@ Once the server is running, do not start `trading_floor.py` on the PC again.
 
 ## One-time setup
 
-1. Create the server (1 GB of memory is enough) and log in with SSH.
+1. Create the server (Ubuntu 24.04, 2 GB of memory, a US East location) and
+   log in with SSH. If the provider logs you in as `root`, make a normal user
+   first, then log out and back in as that user (`ssh cathie@server`); the
+   setup script refuses to run as root:
+
+   ```bash
+   adduser cathie && usermod -aG sudo cathie && rsync --archive --chown=cathie:cathie ~/.ssh /home/cathie
+   ```
+
 2. Get the code:
 
    ```bash
