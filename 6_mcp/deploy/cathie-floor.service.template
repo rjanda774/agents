@@ -1,0 +1,30 @@
+# systemd unit for the Cathie trading floor (trading_floor.py).
+# setup_server.sh fills in __USER__, __DIR__ and __UV__ and installs this as
+# /etc/systemd/system/cathie-floor.service. Don't install this template by hand.
+
+[Unit]
+Description=Cathie trading floor (trading_floor.py)
+After=network-online.target
+Wants=network-online.target
+# Give up after 5 crashes in 10 minutes instead of restarting forever.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+# npx/uvx (Researcher's MCP servers) must be on PATH.
+Environment=PATH=__UVDIR__:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__UV__ run trading_floor.py
+# The scheduler is meant to run forever, so any exit is a crash: restart it.
+Restart=always
+RestartSec=30
+# Stop/restart kills the whole process tree, MCP-server children included
+# (the thing Ctrl+C on Windows didn't do reliably).
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
