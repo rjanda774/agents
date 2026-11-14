@@ -78,7 +78,9 @@ case "$UV" in
 esac
 
 echo "== Syncing Python environment"
-(cd "$DIR" && "$UV" sync)
+# Pin the Python version: left to itself uv picks the newest Python, and some
+# packages (lxml) have no ready-built files for it yet and fail to build.
+(cd "$DIR" && "$UV" sync --python 3.13)
 mkdir -p "$DIR/memory" "$DIR/logs"
 
 # Same clock as the PC the floor ran on, so dates and log times read the same.
