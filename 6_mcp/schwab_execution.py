@@ -96,13 +96,15 @@ def wait_for_status(order_id: int, wanted: set[str], timeout: float = 30.0, poll
 
 
 def find_recent_order(leg_symbols: set[str], since_minutes: int = 10,
-                      closing: bool | None = None, exclude_ids: set | None = None) -> dict | None:
+                      closing: bool | None = None, exclude_ids: set | None = None,
+                      statuses: set | None = None) -> dict | None:
     """The newest order from the last few minutes whose legs are exactly
     `leg_symbols`. Fallback for when place_order() couldn't read the new order's ID,
     so an order we just sent can still be found and cancelled. `closing=True` only
     matches closing orders (every leg ..._TO_CLOSE), False only opening ones: a
     spread's open and close orders have the same legs. `exclude_ids`: orders already
-    accounted for (e.g. an earlier close of the same strikes), never returned."""
+    accounted for (e.g. an earlier close of the same strikes), never returned.
+    `statuses`: only orders in one of these Schwab states (e.g. {"FILLED"})."""
     import datetime as dt
 
     client = _get_client()
@@ -127,6 +129,7 @@ def find_recent_order(leg_symbols: set[str], since_minutes: int = 10,
         if {(leg.get("instrument") or {}).get("symbol") for leg in o.get("orderLegCollection") or []} == leg_symbols
         and (closing is None or _is_close(o) == closing)
         and o.get("orderId") not in (exclude_ids or set())
+        and (statuses is None or o.get("status") in statuses)
     ]
     matches.sort(key=lambda o: o.get("enteredTime") or "", reverse=True)
     return mask_account_fields(matches[0]) if matches else None

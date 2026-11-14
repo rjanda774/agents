@@ -915,6 +915,15 @@ def check_exits(send: bool = True) -> list[str]:
             # Before expiration that needs care: a Schwab reply missing its positions list
             # would look exactly like this. So never when Schwab shows no option positions
             # at all, and only once the legs have been gone on two checks 30+ min apart.
+            # A filled closing order for exactly these contracts is proof it was closed
+            # (by hand, or by a close the ledger lost track of), with the real price.
+            try:
+                close = _filled_close_order(s, now)
+            except Exception:
+                close = None
+            if close:
+                messages.append(_record_close_found(s, close, send))
+                continue
             rule = "expired" if exp < now.date() else "outside"
             if rule == "outside":
                 first = _parse_et(s.legs_missing_since)
@@ -1217,6 +1226,51 @@ def _mark_closed_elsewhere(spread_id: str, rule: str):
         msg = f"{label}: {RULE_TEXT[rule]}; recorded as closed"
         _log(msg)
         _push(f"Cathie's REAL position {msg}.")
+
+
+def _filled_close_order(s: LiveSpread, now: dt.datetime) -> dict | None:
+    """Schwab's FILLED closing order for exactly this spread's two contracts, entered
+    since the spread was sent (up to 59 days back), or None."""
+    import schwab_execution
+    sent = _parse_et(s.submitted_at)
+    age_min = (now - sent).total_seconds() / 60 if sent else 59 * 24 * 60
+    found = schwab_execution.find_recent_order(
+        {s.short_symbol, s.long_symbol}, since_minutes=int(min(age_min + 60, 59 * 24 * 60)),
+        closing=True, statuses={"FILLED"})
+    if not found or not found.get("orderId"):
+        return None
+    return schwab_execution.get_order(found["orderId"])
+
+
+def _record_close_found(s: LiveSpread, order: dict, send: bool) -> str:
+    """Record an open spread as closed from a filled closing order found at Schwab
+    (close_rule 'outside'), with the real debit and P&L when Schwab reports them."""
+    order_id = order.get("orderId")
+    net = fill_net_credit(order)
+    debit = round(-net, 4) if net is not None else None
+    credit = s.fill_credit or s.limit_credit or 0
+    pnl = round((credit - debit) * 100 * s.contracts, 2) if debit is not None else None
+    when = (order.get("closeTime") or "")[:10]
+    price = (f"at {debit:.2f} debit, P&L ${pnl:+,.2f}" if debit is not None
+             else "price not reported, P&L unknown")
+    text = (f"closed outside Cathie{' on ' + when if when else ''} {price} "
+            f"(Schwab order {order_id})")
+    if not send:
+        return f"{s.label()}: {text}; will be recorded as closed"
+
+    def _fn(lg: LiveLedger):
+        x = lg.get(s.id)
+        if x is None or x.status != "open":
+            return False
+        x.status, x.close_rule, x.closed_at = "closed", "outside", _now_et().isoformat()
+        x.close_order_id, x.close_fill_debit, x.realized_pnl = order_id, debit, pnl
+        x.note(text)
+        return True
+    msg = f"{s.label()}: {text}; recorded as closed"
+    if _mutate(_fn):
+        _log(msg)
+        _push(f"Cathie's REAL position {msg}.")
+    return msg
 
 
 def _known_order_ids() -> set:
