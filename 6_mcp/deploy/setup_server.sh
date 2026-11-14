@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup of a Linux server (Ubuntu/Debian) to run the Cathie trading
+# One-time setup of a Linux server (Ubuntu/Debian or AlmaLinux/Rocky) to run the Cathie trading
 # floor as a background service. Run it on the server, from anywhere:
 #
 #     bash 6_mcp/deploy/setup_server.sh
@@ -20,20 +20,62 @@ fi
 
 echo "== Trading floor directory: $DIR (service will run as $RUN_USER)"
 
+# Ubuntu/Debian use apt-get; AlmaLinux/Rocky/RHEL use dnf.
+if command -v apt-get >/dev/null 2>&1; then
+    PKG=apt
+elif command -v dnf >/dev/null 2>&1; then
+    PKG=dnf
+else
+    echo "Neither apt-get nor dnf found: this script supports Ubuntu/Debian and AlmaLinux/Rocky/RHEL." >&2
+    exit 1
+fi
+
 # Node.js: the Researcher's Brave-search and memory MCP servers run through npx.
 if ! command -v npx >/dev/null 2>&1; then
     echo "== Installing Node.js"
-    sudo apt-get update -y
-    sudo apt-get install -y nodejs npm
+    if [ "$PKG" = apt ]; then
+        sudo apt-get update -y
+        sudo apt-get install -y nodejs npm curl
+    else
+        # The default Node.js on AlmaLinux 9 is too old; ask for version 20.
+        sudo dnf module reset -y nodejs || true
+        sudo dnf module enable -y nodejs:20 || true
+        sudo dnf install -y nodejs npm curl tar
+    fi
+fi
+NODE_MAJOR="$(node -v 2>/dev/null | sed -e 's/^v//' -e 's/\..*//' || true)"
+if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 18 ]; then
+    echo "WARNING: Node.js 18 or newer is needed (found: $(node -v 2>/dev/null || echo none))." >&2
+    echo "         The Researcher's search and memory tools may not start." >&2
 fi
 
-# uv: runs the floor from the pinned uv.lock.
-if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
-    echo "== Installing uv"
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+# uv: runs the floor from the pinned uv.lock. Installed system-wide, in
+# /usr/local/bin, so the service can run it on servers with SELinux
+# (AlmaLinux), which blocks services from starting programs kept in a home
+# folder.
+if command -v uv >/dev/null 2>&1; then
+    UV="$(command -v uv)"
+else
+    echo "== Installing uv into /usr/local/bin"
+    curl -LsSf https://astral.sh/uv/install.sh \
+        | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+    UV=/usr/local/bin/uv
+    if [ ! -x "$UV" ]; then
+        echo "uv did not end up in /usr/local/bin; stop here and report this message." >&2
+        exit 1
+    fi
+    if command -v restorecon >/dev/null 2>&1; then
+        sudo restorecon /usr/local/bin/uv /usr/local/bin/uvx 2>/dev/null || true
+    fi
 fi
-UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
 UVDIR="$(dirname "$UV")"
+case "$UV" in
+    /home/*|/root/*)
+        if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" = "Enforcing" ]; then
+            echo "WARNING: uv is in a home folder ($UV) and SELinux is on;" >&2
+            echo "         the service may fail to start (status=203/EXEC)." >&2
+        fi ;;
+esac
 
 echo "== Syncing Python environment"
 (cd "$DIR" && "$UV" sync)

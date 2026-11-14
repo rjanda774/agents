@@ -1,7 +1,7 @@
 # Running the trading floor on a cloud server
 
 Runs `trading_floor.py` as a background service on a small always-on Linux
-server (Ubuntu or Debian), so it keeps going when your PC sleeps or restarts.
+server (Ubuntu, Debian or AlmaLinux), so it keeps going when your PC sleeps or restarts.
 
 ## The one rule: everything that touches Cathie's trades runs on the server
 
@@ -17,16 +17,40 @@ Once the server is running, do not start `trading_floor.py` on the PC again.
 
 ## One-time setup
 
-1. Create the server (Ubuntu 24.04, 2 GB of memory, a US East location) and
-   log in with SSH. If the provider logs you in as `root`, make a normal user
-   first, then log out and back in as that user (`ssh cathie@server`); the
-   setup script refuses to run as root:
+1. Create the server (Ubuntu 24.04 or AlmaLinux 9, 2 GB of memory, a US East
+   location). If the provider logs you in as `root`, make a normal user first;
+   the setup script refuses to run as root. As root, one line at a time
+   (`adduser` may already have asked for the password, then skip `passwd`):
 
    ```bash
-   adduser cathie && usermod -aG sudo cathie && rsync --archive --chown=cathie:cathie ~/.ssh /home/cathie
+   adduser cathie
    ```
 
-2. Get the code:
+   ```bash
+   passwd cathie
+   ```
+
+   Then give that user admin rights. On Ubuntu or Debian:
+
+   ```bash
+   usermod -aG sudo cathie
+   ```
+
+   On AlmaLinux or Rocky (the group has a different name, and git isn't
+   installed yet):
+
+   ```bash
+   usermod -aG wheel cathie
+   ```
+
+   ```bash
+   dnf install -y git
+   ```
+
+   Then log in as that user from your PC, using the server's IP address:
+   `ssh cathie@203.0.113.45`. Answer `yes` to the first-time question.
+
+2. Get the code (as that user, on the server):
 
    ```bash
    git clone https://github.com/rjanda774/agents.git
@@ -81,7 +105,7 @@ ssh -L 7860:localhost:7860 you@server
 
 **Keeping `breach_watch.py` or `app.py` running after you disconnect.** A
 command started in an SSH window stops when the window closes. Start it inside
-`tmux` (`sudo apt-get install -y tmux`, then `tmux new -s watch`, run the
+`tmux` (`sudo apt-get install -y tmux`, or `sudo dnf install -y tmux` on AlmaLinux, then `tmux new -s watch`, run the
 command, press Ctrl+B then D to leave it running; `tmux attach -t watch` to
 come back).
 
