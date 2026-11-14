@@ -57,6 +57,7 @@ MAX_CONTRACTS_PER_ORDER = 1
 MAX_ORDERS_PER_DAY = 2
 MAX_STAGED = 3
 UNFILLED_CANCEL_MINUTES = 30
+STUCK_PENDING_MINUTES = 24 * 60   # a pending DAY order this old can no longer be working
 MIN_NET_PREMIUM = 50.0
 MAX_SHORT_DELTA = 0.20
 MIN_DTE, MAX_DTE = 25, 45
@@ -673,7 +674,7 @@ def fill_net_credit(order: dict) -> float | None:
     return round(total / filled, 4) if filled else None
 
 
-def _follow_replaced(order_id, record, leg_symbols, closing):
+def _follow_replaced(order_id, record, leg_symbols, closing, since_minutes: int = 24 * 60):
     """If Schwab says `order_id` was REPLACED (editing a working order in thinkorswim
     gives it a new order ID and retires the old one), follow it to the order that took its
     place: the ID Schwab lists in replacingOrderCollection, else the newest order with the
@@ -689,13 +690,40 @@ def _follow_replaced(order_id, record, leg_symbols, closing):
             if child.get("orderId"):
                 new_id = child["orderId"]
         if new_id is None:
-            found = schwab_execution.find_recent_order(leg_symbols, since_minutes=24 * 60,
+            found = schwab_execution.find_recent_order(leg_symbols, since_minutes=since_minutes,
                                                        closing=closing, exclude_ids={order_id})
             new_id = found.get("orderId") if found else None
         if new_id is None or new_id == order_id:
             break
         order_id, record = new_id, schwab_execution.get_order(new_id)
     return order_id, record
+
+
+def _settle_stuck_pending(s: "LiveSpread", order_id, status, messages: list) -> dict:
+    """A trade still 'pending' a day after it was sent, whose Schwab order is in none of
+    the states reconcile understands (seen live 2026-11-14: MU 870/860 sat pending for
+    weeks with no message). A DAY order can't still be working by then, so decide from
+    what the account holds: both contracts -> it filled (open); neither -> finished;
+    one -> say so and change nothing. Returns the ledger update (may be empty)."""
+    import schwab_trading
+    positions = schwab_trading.option_positions(schwab_trading.get_account(include_positions=True))
+    held = {p["symbol"] for p in positions if p.get("quantity")}
+    legs = {s.short_symbol, s.long_symbol}
+    what = f"Schwab order {order_id} is {status or 'in an unknown state'}"
+    if legs <= held:
+        credit = s.limit_credit or s.staged_credit or 0.0
+        return dict(status="open", fill_credit=credit, filled_at=_now_et().isoformat(),
+                    net_premium=round(credit * 100 * s.contracts, 2),
+                    max_loss=round((s.width - credit) * 100 * s.contracts, 2),
+                    note=f"{what}, but both contracts are in the account: recorded as filled "
+                         f"at the {credit:.2f} limit (real fill price unknown)")
+    if not (legs & held):
+        return dict(status="not_filled",
+                    note=f"{what} and the account holds neither contract: recorded as finished. "
+                         f"If it did fill, it was closed outside the ledger")
+    messages.append(f"{s.label()}: {what} and only ONE of its contracts is in the account; "
+                    f"check thinkorswim. Left as pending")
+    return {}
 
 
 def reconcile() -> list[str]:
@@ -732,13 +760,16 @@ def reconcile() -> list[str]:
                     update.update(status="not_filled", note="no matching order found at Schwab; check thinkorswim")
             if order_id is not None:
                 record = schwab_execution.get_order(order_id)
+                age_min = ((now - t).total_seconds() / 60) if (t := _parse_et(s.submitted_at)) else 0
                 if record.get("status") == "REPLACED":
-                    new_id, record = _follow_replaced(order_id, record, {s.short_symbol, s.long_symbol}, False)
+                    # Look back as far as the trade is old (Schwab keeps 60 days of orders).
+                    lookback = int(min(max(24 * 60, age_min + 60), 59 * 24 * 60))
+                    new_id, record = _follow_replaced(order_id, record, {s.short_symbol, s.long_symbol},
+                                                      False, since_minutes=lookback)
                     if new_id != order_id:
                         update["order_id"] = order_id = new_id
                         messages.append(f"{s.label()}: order was edited at Schwab; now tracking order {new_id}")
                 status = record.get("status")
-                age_min = ((now - t).total_seconds() / 60) if (t := _parse_et(s.submitted_at)) else 0
                 if (status not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "PENDING_CANCEL", "REPLACED")
                         and age_min >= UNFILLED_CANCEL_MINUTES):
                     schwab_execution.cancel_order(order_id)
@@ -756,6 +787,8 @@ def reconcile() -> list[str]:
                     why = (f"unfilled after {age_min:.0f} min, so cancelled" if "note" in update
                            else status + (f": {reason}" if reason else ""))
                     update.update(status="not_filled", note=f"Schwab order {order_id} {why}")
+                elif age_min >= STUCK_PENDING_MINUTES:
+                    update.update(_settle_stuck_pending(s, order_id, status, messages))
         except Exception as e:
             messages.append(f"{s.label()}: couldn't check with Schwab ({e})")
             continue
