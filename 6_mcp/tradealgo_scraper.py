@@ -42,6 +42,13 @@ Modes:
         itself -- a scraper problem should never be able to stall a trading
         cycle. Cathie reads the saved file via options_trading_server.py's
         get_dark_pool_activity tool, never TradeAlgo directly.
+        If TRADEALGO_UPLOAD_TO is set in .env (user@server:folder), the saved
+        file is then copied to the server the trading floor runs on, using
+        this PC's SSH key.
+
+    uv run tradealgo_scraper.py upload
+        Copies the already-saved file to TRADEALGO_UPLOAD_TO again. Makes no
+        TradeAlgo request and doesn't count against the daily cap.
 
 Deliberately independent of the trading floor: nothing here is imported by
 trading_floor.py or any MCP server.
@@ -634,11 +641,64 @@ def run_fetch(headless: bool = True, now: dt.datetime | None = None) -> dict:
     print(f"Saved TradeAlgo data to {CACHE_PATH} ({counts}).")
     for name, err in errors.items():
         print(f"WARNING: {name} page failed: {err}")
+    uploaded = upload_cache()
+    if uploaded:
+        print(uploaded)
     return cache
 
 
+def upload_cache(run=None) -> str | None:
+    """Copy tradealgo_darkpool.json to the server the trading floor runs on, when
+    TRADEALGO_UPLOAD_TO is set (e.g. `cathie@203.0.113.45:agents/6_mcp`). Uses the PC's own
+    ssh/scp and SSH key, never a password (BatchMode), so it works from a scheduled task.
+    The file goes up under a temporary name and is renamed, so the floor never reads a
+    half-copied file. Returns a one-line result, or None when no destination is set.
+    Never raises: a failed upload must not turn a good fetch into a failed one."""
+    import subprocess
+
+    dest = (os.getenv("TRADEALGO_UPLOAD_TO") or "").strip()
+    if not dest:
+        return None
+    host, sep, folder = dest.partition(":")
+    folder = folder.strip().rstrip("/")
+    if not sep or not host or not folder or any(c in folder for c in " '\"\\;&|$`"):
+        return (f"WARNING: TRADEALGO_UPLOAD_TO should look like user@server:folder "
+                f"(got {dest!r}); not uploaded.")
+    if not os.path.exists(CACHE_PATH):
+        return f"WARNING: nothing to upload: {CACHE_PATH} doesn't exist yet."
+    name = os.path.basename(CACHE_PATH)
+    opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
+    steps = [
+        # A bare file name, run from the file's folder: scp would read the colon in a
+        # Windows path like C:\\... as a server name.
+        ["scp", "-q", *opts, name, f"{host}:{folder}/.{name}.upload"],
+        ["ssh", *opts, host, f"mv {folder}/.{name}.upload {folder}/{name}"],
+    ]
+    run = run or (lambda cmd: subprocess.run(cmd, capture_output=True, text=True, timeout=90,
+                                             cwd=os.path.dirname(CACHE_PATH)))
+    try:
+        for cmd in steps:
+            done = run(cmd)
+            if done.returncode != 0:
+                why = (done.stderr or done.stdout or "").strip().splitlines()
+                return (f"WARNING: upload to {host} failed at `{cmd[0]}` "
+                        f"({why[-1] if why else 'exit code ' + str(done.returncode)}). "
+                        f"The data is still saved on this PC.")
+    except Exception as e:
+        return f"WARNING: upload to {host} failed ({e}). The data is still saved on this PC."
+    return f"Uploaded {name} to {host}:{folder}."
+
+
+def run_upload() -> None:
+    """`upload` mode: send the existing file again without fetching (no TradeAlgo request)."""
+    result = upload_cache()
+    print(result or "TRADEALGO_UPLOAD_TO isn't set in .env, so there is nowhere to upload to.")
+    if result is None or result.startswith("WARNING"):
+        raise RuntimeError("not uploaded")
+
+
 def main(argv: list[str]) -> int:
-    modes = {"login": run_login, "discover": run_discover, "fetch": run_fetch}
+    modes = {"login": run_login, "discover": run_discover, "fetch": run_fetch, "upload": run_upload}
     if len(argv) != 2 or argv[1] not in modes:
         print(__doc__)
         return 2
