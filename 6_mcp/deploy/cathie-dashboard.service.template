@@ -1,0 +1,32 @@
+# systemd unit for Cathie's dashboard (app.py).
+# setup_server.sh fills in __USER__, __DIR__ and __UV__ and installs this as
+# /etc/systemd/system/cathie-dashboard.service. Don't install this template by hand.
+
+[Unit]
+Description=Cathie dashboard (app.py, on localhost:7860)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+Environment=PATH=__UVDIR__:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+# Only reachable from the server itself (view it through an SSH tunnel), and
+# always on port 7860: if that port is taken it fails with an error instead of
+# quietly moving to 7861, where the tunnel can't find it.
+Environment=GRADIO_SERVER_NAME=127.0.0.1
+Environment=GRADIO_SERVER_PORT=7860
+Environment=GRADIO_NUM_PORTS=1
+Environment=GRADIO_ANALYTICS_ENABLED=False
+ExecStart=__UV__ run app.py
+Restart=always
+RestartSec=30
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

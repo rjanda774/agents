@@ -90,24 +90,39 @@ Once the server is running, do not start `trading_floor.py` on the PC again.
 | Approve trades | `uv run approve_orders.py` |
 | Schwab login (every 7 days) | `uv run schwab_auth_setup.py` (open the printed link in your PC's browser, paste the redirect address back) |
 | Breach alerts | `uv run breach_watch.py` (see below to keep it running) |
-| Dashboard | `uv run app.py`, see below |
-| After a code change | `git pull && uv sync && sudo systemctl restart cathie-floor` |
+| Dashboard | runs as the `cathie-dashboard` service, see below |
+| After a code change | `git pull && uv sync && sudo systemctl restart cathie-floor cathie-dashboard` |
 
 Edits to `.env` need a restart; `watchlist.txt`, `hands_off.txt`,
 `sectors.txt` and `STOP_TRADING` take effect on the next cycle as before.
 
-**Dashboard.** It listens only on the server itself. From your PC, connect with
-a tunnel and leave that window open, then browse to http://localhost:7860:
+**Dashboard.** It runs as its own service, `cathie-dashboard`, installed by
+`setup_server.sh` alongside the floor. Like the floor it starts on boot and
+restarts after a crash. Start it once:
+
+```bash
+sudo systemctl start cathie-dashboard
+```
+
+It listens only on the server itself, always on port 7860. From your PC,
+connect with a tunnel and leave that window open, then browse to
+http://localhost:7860:
 
 ```bash
 ssh -L 7860:localhost:7860 you@server
 ```
 
-**Keeping `breach_watch.py` or `app.py` running after you disconnect.** A
-command started in an SSH window stops when the window closes. Start it inside
-`tmux` (`sudo apt-get install -y tmux`, or `sudo dnf install -y tmux` on AlmaLinux, then `tmux new -s watch`, run the
-command, press Ctrl+B then D to leave it running; `tmux attach -t watch` to
-come back).
+`systemctl status cathie-dashboard` shows whether it is running. If it keeps
+failing with "Cannot find empty port", another `app.py` is already using the
+port (for example one left in a tmux session): stop that one with
+`pkill -f " app.py"`, then `sudo systemctl restart cathie-dashboard`. After a
+code change, restart it together with the floor.
+
+**Keeping `breach_watch.py` running after you disconnect.** A command started
+in an SSH window stops when the window closes. Start it inside `tmux`
+(`sudo apt-get install -y tmux`, or `sudo dnf install -y tmux` on AlmaLinux,
+then `tmux new -s watch`, run the command, press Ctrl+B then D to leave it
+running; `tmux attach -t watch` to come back). A reboot ends tmux sessions.
 
 ## What stays on the PC
 

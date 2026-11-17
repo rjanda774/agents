@@ -6,7 +6,7 @@
 #
 # It installs uv and Node.js if missing, syncs the Python environment, sets
 # the server clock to Eastern time, and installs (but does not start) the
-# cathie-floor service. Safe to run again. See deploy/README.md.
+# cathie-floor and cathie-dashboard services. Safe to run again. See deploy/README.md.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # .../6_mcp
@@ -87,16 +87,20 @@ mkdir -p "$DIR/memory" "$DIR/logs"
 echo "== Setting server time zone to America/New_York"
 sudo timedatectl set-timezone America/New_York
 
-echo "== Installing $SERVICE.service"
-sed -e "s|__USER__|$RUN_USER|g" -e "s|__DIR__|$DIR|g" \
-    -e "s|__UVDIR__|$UVDIR|g" -e "s|__UV__|$UV|g" \
-    "$DIR/deploy/cathie-floor.service.template" \
-    | sudo tee "/etc/systemd/system/$SERVICE.service" >/dev/null
+# The trading floor, and the dashboard (app.py) as a second, separate service.
+for UNIT in $SERVICE cathie-dashboard; do
+    echo "== Installing $UNIT.service"
+    sed -e "s|__USER__|$RUN_USER|g" -e "s|__DIR__|$DIR|g" \
+        -e "s|__UVDIR__|$UVDIR|g" -e "s|__UV__|$UV|g" \
+        "$DIR/deploy/$UNIT.service.template" \
+        | sudo tee "/etc/systemd/system/$UNIT.service" >/dev/null
+done
 sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE" >/dev/null
+sudo systemctl enable "$SERVICE" cathie-dashboard >/dev/null
 
 echo
-echo "Done. The service is installed but NOT started."
+echo "Done. Both services are installed. This script starts and restarts nothing:"
+echo "one that was already running keeps running, one that wasn't stays stopped."
 missing=0
 for f in .env schwab_token.json accounts.db; do
     if [ ! -e "$DIR/$f" ]; then
@@ -105,5 +109,6 @@ for f in .env schwab_token.json accounts.db; do
     fi
 done
 [ "$missing" = 0 ] && echo "  .env, schwab_token.json and accounts.db are in place."
-echo "Start it with:   sudo systemctl start $SERVICE"
-echo "Watch it with:   journalctl -u $SERVICE -f"
+echo "Trading floor:   sudo systemctl start $SERVICE"
+echo "Dashboard:       sudo systemctl start cathie-dashboard"
+echo "Watch either:    journalctl -u $SERVICE -f   (or -u cathie-dashboard)"
