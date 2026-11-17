@@ -6,9 +6,15 @@ from agents import add_trace_processor
 from market import is_market_open
 from single_instance import acquire_single_instance_lock, AlreadyRunningError
 from dotenv import load_dotenv
+import logging
 import os
 
 load_dotenv(override=True)
+
+# httpx logs one INFO line per request, with the full URL. For Schwab's account endpoints
+# that URL contains the account hash, which doesn't belong in a log; it is also most of
+# the log's volume. Warnings and errors still show.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 RUN_EVERY_N_MINUTES = int(os.getenv("RUN_EVERY_N_MINUTES", "60"))
 RUN_EVEN_WHEN_MARKET_IS_CLOSED = (

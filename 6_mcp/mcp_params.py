@@ -29,6 +29,12 @@ except PackageNotFoundError:
 # Pass the full environment through explicitly to every spawned server to avoid this.
 FULL_ENV = dict(os.environ)
 
+# Every local MCP server prints a harmless pydantic warning about FastMCP's 'lifespan'
+# setting when it starts: five multi-line warnings per cycle in the floor's log. Silence
+# just that one in the child processes (PYTHONWARNINGS matches the start of the message).
+_QUIET = "ignore:Field 'lifespan' has an incomplete definition"
+FULL_ENV["PYTHONWARNINGS"] = ",".join(filter(None, [os.environ.get("PYTHONWARNINGS"), _QUIET]))
+
 # Local MCP servers are launched with this exact interpreter (sys.executable), not `uv run` --
 # guarantees the exact same interpreter/env as the parent process regardless of how
 # trading_floor.py itself was launched (uv run or a hand-managed venv's plain python; see
